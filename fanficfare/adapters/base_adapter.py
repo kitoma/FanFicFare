@@ -246,14 +246,28 @@ class BaseSiteAdapter(Requestable):
         return len(intersection) / len(union) if union else 0.0
 
     def _chapter_needs_recheck(self, url, index, total_site_chapters):
-        """Determine if a chapter should be re-downloaded for edit detection."""
+        """Determine if a chapter should be re-downloaded for edit detection.
+
+        The edit-check window is the LAST recent_count chapters of the
+        OLD EPUB in reading order, NOT the last recent_count chapters of
+        the site.  With a site-based window the "most recent" site
+        chapters are usually brand-new ones that are not in the epub at
+        all, so no previously-downloaded chapter ever gets re-checked;
+        an epub-based window keeps re-checking the chapters the reader
+        most recently got (the ones authors most often edit) even after
+        the site has grown far past them.  index/total_site_chapters
+        are accepted for API compatibility but no longer used here.
+        """
         recent_count = int(self.getConfig('update_check_recent_chapters', 0) or 0)
         age_days = int(self.getConfig('update_check_chapter_age_days', 0) or 0)
 
-        if recent_count > 0:
-            # Check if this chapter is among the N most recent from the site
-            if index >= total_site_chapters - recent_count:
-                return True
+        if recent_count > 0 and self.oldchaptersmap:
+            try:
+                if list(self.oldchaptersmap.keys()).index(url) >= \
+                        len(self.oldchaptersmap) - recent_count:
+                    return True
+            except ValueError:
+                pass
 
         if age_days > 0 and self.oldchaptercheckdates and url in self.oldchaptercheckdates:
             try:
