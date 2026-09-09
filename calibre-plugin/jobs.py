@@ -279,11 +279,18 @@ def do_download_for_worker(book,options,merge,notification=lambda x,y:x):
                  adapter.calibrebookmark,
                  adapter.logfile,
                  adapter.oldchaptersmap,
-                 adapter.oldchaptersdata) = get_update_data(book['epub_for_update'])[0:9]
+                 adapter.oldchaptersdata,
+                 adapter.oldchapterhashes,
+                 adapter.oldchaptercheckdates) = get_update_data(book['epub_for_update'])[0:11]
 
                 # dup handling from fff_plugin needed for anthology updates & BG metadata.
                 if book['collision'] in (UPDATE,UPDATEALWAYS):
-                    if chaptercount == urlchaptercount and book['collision'] == UPDATE:
+                    needs_edit_check = bool(
+                        int(adapter.getConfig('update_check_recent_chapters') or 0) or
+                        int(adapter.getConfig('update_check_chapter_age_days') or 0))
+                    preserve_deleted = adapter.getConfig('update_preserve_deleted_chapters')
+
+                    if chaptercount == urlchaptercount and book['collision'] == UPDATE and not needs_edit_check:
                         if merge:
                             ## Deliberately pass for UPDATEALWAYS merge.
                             book['comment']=_("Already contains %d chapters.  Reuse as is.")%chaptercount
@@ -294,7 +301,7 @@ def do_download_for_worker(book,options,merge,notification=lambda x,y:x):
                             return book
                         else:
                             raise NotGoingToDownload(_("Already contains %d chapters.")%chaptercount,'edit-undo.png',showerror=False)
-                    elif chaptercount > urlchaptercount and not (book['collision'] == UPDATEALWAYS and adapter.getConfig('force_update_epub_always')):
+                    elif chaptercount > urlchaptercount and not preserve_deleted and not (book['collision'] == UPDATEALWAYS and adapter.getConfig('force_update_epub_always')):
                         raise NotGoingToDownload(_("Existing epub contains %d chapters, web site only has %d. Use Overwrite or force_update_epub_always to force update.") % (chaptercount,urlchaptercount),'dialog_error.png')
                     elif chaptercount == 0:
                         raise NotGoingToDownload(_("FanFicFare doesn't recognize chapters in existing epub, epub is probably from a different source. Use Overwrite to force update."),'dialog_error.png')
@@ -315,12 +322,12 @@ def do_download_for_worker(book,options,merge,notification=lambda x,y:x):
                     book['comment'] = _('Update %(fileform)s completed, added %(added)s chapters, %(failed)s failed chapters, for %(total)s total.')%\
                         {'fileform':options['fileform'],
                          'failed':adapter.story.chapter_error_count,
-                         'added':(urlchaptercount-chaptercount),
-                         'total':urlchaptercount}
+                         'added':(adapter.story.getChapterCount()-chaptercount),
+                         'total':adapter.story.getChapterCount()}
                     book['chapter_error_count'] = adapter.story.chapter_error_count
                 else:
                     book['comment'] = _('Update %(fileform)s completed, added %(added)s chapters for %(total)s total.')%\
-                        {'fileform':options['fileform'],'added':(urlchaptercount-chaptercount),'total':urlchaptercount}
+                        {'fileform':options['fileform'],'added':(adapter.story.getChapterCount()-chaptercount),'total':adapter.story.getChapterCount()}
                 book['all_metadata'] = story.getAllMetadata(removeallentities=True)
                 if options['savemetacol'] != '':
                     book['savemetacol'] = story.dump_html_metadata()

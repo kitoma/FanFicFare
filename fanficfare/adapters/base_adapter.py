@@ -17,6 +17,9 @@
 
 import re
 import os
+import hashlib
+import time
+import random
 from datetime import datetime, timedelta
 from collections import defaultdict
 
@@ -95,6 +98,8 @@ class BaseSiteAdapter(Requestable):
 
         self.calibrebookmark = None
         self.logfile = None
+        self.oldchapterhashes = None
+        self.oldchaptercheckdates = None
         self.ignore_chapter_url_list = None
         self.parsed_QS = None
 
@@ -214,6 +219,54 @@ class BaseSiteAdapter(Requestable):
         del self.chapterUrls[i]
         self.story.setMetadata('numChapters', self.num_chapters())
 
+    def compute_chapter_hash(self, html_content):
+        """Compute a text-only SHA-256 hash of chapter content for change detection.
+        Strips HTML tags and normalizes whitespace before hashing."""
+        if not html_content:
+            return ''
+        try:
+            from bs4 import BeautifulSoup as _BS
+            text = stripHTML(_BS(html_content, 'html.parser'))
+        except Exception:
+            text = html_content
+        text = re.sub(r'\s+', ' ', text).strip()
+        return hashlib.sha256(text.encode('utf-8')).hexdigest()
+
+    def text_similarity(self, text_a, text_b):
+        """Compute Jaccard similarity between two text strings.
+        Returns float between 0.0 (completely different) and 1.0 (identical)."""
+        if not text_a or not text_b:
+            return 0.0
+        words_a = set(text_a.lower().split())
+        words_b = set(text_b.lower().split())
+        if not words_a or not words_b:
+            return 0.0
+        intersection = words_a & words_b
+        union = words_a | words_b
+        return len(intersection) / len(union) if union else 0.0
+
+    def _chapter_needs_recheck(self, url, index, total_site_chapters):
+        """Determine if a chapter should be re-downloaded for edit detection."""
+        recent_count = int(self.getConfig('update_check_recent_chapters', 0) or 0)
+        age_days = int(self.getConfig('update_check_chapter_age_days', 0) or 0)
+
+        if recent_count > 0:
+            # Check if this chapter is among the N most recent from the site
+            if index >= total_site_chapters - recent_count:
+                return True
+
+        if age_days > 0 and self.oldchaptercheckdates and url in self.oldchaptercheckdates:
+            try:
+                check_date_str = self.oldchaptercheckdates[url]
+                if check_date_str:
+                    check_date = datetime.strptime(check_date_str, '%Y-%m-%d %H:%M:%S')
+                    if (datetime.now() - check_date).days >= age_days:
+                        return True
+            except (ValueError, TypeError):
+                pass
+
+        return False
+
     def img_url_trans(self,imgurl):
         "Hook for transforming img urls in adapter"
         return imgurl
@@ -226,6 +279,9 @@ class BaseSiteAdapter(Requestable):
             ## one-off step to normalize old chapter URLs if present.
             if self.oldchaptersmap:
                 self.oldchaptersmap = dict((self.normalize_chapterurl(key), value) for (key, value) in self.oldchaptersmap.items())
+
+            # Track fresh chapter content for reupload similarity detection
+            fresh_chapter_content = {}
 
             percent = 0.0
             per_step = 1.0/self.story.getChapterCount()
@@ -258,10 +314,35 @@ class BaseSiteAdapter(Requestable):
                     data = None
                     if self.oldchaptersmap:
                         if url in self.oldchaptersmap:
-                            # logger.debug("index:%s title:%s url:%s"%(index,title,url))
-                            # logger.debug(self.oldchaptersmap[url])
-                            data = self.utf8FromSoup(None,
-                                                     self.oldchaptersmap[url])
+                            # Check if edit detection wants us to re-check this chapter
+                            recheck = self._chapter_needs_recheck(
+                                url, index, len(self.chapterUrls))
+                            if recheck:
+                                # Re-download for edit detection
+                                try:
+                                    sleep_time = self.getConfig('update_check_sleep_time')
+                                    if sleep_time:
+                                        time.sleep(random.uniform(
+                                            float(sleep_time)*0.5,
+                                            float(sleep_time)*1.5))
+                                    fresh_data = self.getChapterTextNum(url, index)
+                                    fresh_hash = self.compute_chapter_hash(fresh_data)
+                                    old_hash = (self.oldchapterhashes or {}).get(url, '')
+                                    if fresh_hash != old_hash:
+                                        # Content changed, use fresh version
+                                        data = fresh_data
+                                        logger.info("Chapter %d (%s) content changed, using updated version" % (index+1, url))
+                                    else:
+                                        # Content unchanged, reuse old
+                                        data = self.utf8FromSoup(None,
+                                                                 self.oldchaptersmap[url])
+                                except Exception as e:
+                                    logger.warning("Edit check for %s failed, reusing old: %s" % (url, e))
+                                    data = self.utf8FromSoup(None,
+                                                             self.oldchaptersmap[url])
+                            else:
+                                data = self.utf8FromSoup(None,
+                                                         self.oldchaptersmap[url])
                     elif self.oldchapters and index < len(self.oldchapters):
                         data = self.utf8FromSoup(None,
                                                  self.oldchapters[index])
@@ -296,10 +377,10 @@ try to download.</p>
 
                         if index == 0 and self.getConfig('always_reload_first_chapter'):
                             data = self.getChapterTextNum(url,index)
-                            # first chapter is rarely marked new
-                            # anyway--only if it's replaced during an
-                            # update.
-                            newchap = False
+                            # preserve newchap from edit detection if active
+                            if not (int(self.getConfig('update_check_recent_chapters') or 0) or
+                                    int(self.getConfig('update_check_chapter_age_days') or 0)):
+                                newchap = False
                     except Exception as e:
                         if self.getConfig('continue_on_chapter_error',False):
                             logger.info("continue_on_chapter_error: (%s) %s"%(url,e))
@@ -320,10 +401,88 @@ try to download.</p>
                     passchap['url'] = url
                     passchap['title'] = title
                     passchap['html'] = data
+                    # Compute and store content hash for edit detection
+                    if data:
+                        passchap['chapterhash'] = self.compute_chapter_hash(
+                            data if isinstance(data, str) else str(data))
+                        passchap['chapterlastcheck'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    else:
+                        passchap['chapterhash'] = ''
+                        passchap['chapterlastcheck'] = ''
                     ## XXX -- add chapter text replacement here?
                     ## No?  Want to be able to configure by [writer]
                     ## It's a soup or soup part?
                 self.story.addChapter(passchap, newchap)
+                # Track content of newly fetched chapters for reupload detection
+                if newchap and passchap.get('html') and isinstance(passchap['html'], str):
+                    try:
+                        from bs4 import BeautifulSoup as _BS
+                        fresh_chapter_content[url] = stripHTML(_BS(passchap['html'], 'html.parser'))
+                    except Exception:
+                        pass
+
+            # Handle preserved deleted chapters (chapters in old epub
+            # but no longer on the site). Preserved chapters are
+            # inserted at their original position relative to the
+            # remaining site chapters so chronological order is kept.
+            if self.getConfig('update_preserve_deleted_chapters') and self.oldchaptersmap:
+                site_urls = set(ch['url'] for ch in self.chapterUrls)
+                old_urls_in_order = list(self.oldchaptersmap.keys())
+                preserve_list = []
+                for old_url in old_urls_in_order:
+                    if old_url not in site_urls:
+                        preserve_list.append(old_url)
+
+                reupload_detection = self.getConfig('update_reupload_detection', 'none')
+                threshold = float(self.getConfig('update_reupload_similarity_threshold', '0.8') or '0.8')
+
+                for old_url in preserve_list:
+                    old_soup = self.oldchaptersmap[old_url]
+                    old_text = stripHTML(old_soup) if old_soup else ''
+
+                    matched = False
+                    if reupload_detection == 'similarity' and old_text:
+                        # Check if any new chapter has similar content
+                        best_match_url = None
+                        best_similarity = 0.0
+                        for new_url, new_text in fresh_chapter_content.items():
+                            sim = self.text_similarity(old_text, new_text)
+                            if sim > best_similarity:
+                                best_similarity = sim
+                                best_match_url = new_url
+                        if best_match_url and best_similarity >= threshold:
+                            matched = True
+                            logger.info("Reupload detected: %s similar to %s (%.1f%%), "
+                                       "keeping new version only" %
+                                       (old_url, best_match_url, best_similarity * 100))
+
+                    if not matched:
+                        # Preserve this chapter as a deleted chapter
+                        old_hash = (self.oldchapterhashes or {}).get(old_url, '')
+                        old_checkdate = (self.oldchaptercheckdates or {}).get(old_url, '')
+                        # Extract title from old soup if possible
+                        old_title = old_url.split('/')[-1].replace('-', ' ').replace('_', ' ')
+                        old_h3 = old_soup.find('h3') if old_soup else None
+                        if old_h3:
+                            old_title = old_h3.get_text(strip=True)
+                        preserved_chap = {
+                            'url': old_url,
+                            'title': old_title,
+                            'html': self.utf8FromSoup(None, old_soup) if old_soup else '',
+                            'chapterhash': old_hash,
+                            'chapterlastcheck': old_checkdate,
+                        }
+                        # insert before first surviving site chapter that
+                        # originally followed this one (append if none)
+                        ch_index = len(self.story.chapters)
+                        for i, ch in enumerate(self.story.chapters):
+                            if ch['url'] in old_urls_in_order:
+                                if old_urls_in_order.index(ch['url']) > old_urls_in_order.index(old_url):
+                                    ch_index = i
+                                    break
+                        self.story.chapters.insert(ch_index, preserved_chap)
+                        logger.info("Preserved deleted chapter: %s" % old_url)
+
             self.storyDone = True
 
             # copy oldcover tuple to story.

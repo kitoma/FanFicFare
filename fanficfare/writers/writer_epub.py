@@ -137,6 +137,8 @@ ${value}<br />
 <meta name="chapterorigtitle" content="${origchapter}" />
 <meta name="chaptertoctitle" content="${tocchapter}" />
 <meta name="chaptertitle" content="${chapter}" />
+<meta name="chapterhash" content="${chapterhash}" />
+<meta name="chapterlastcheck" content="${chapterlastcheck}" />
 </head>
 <body class="fff_chapter">
 <h3 class="fff_chapter_title">${chapter}</h3>
