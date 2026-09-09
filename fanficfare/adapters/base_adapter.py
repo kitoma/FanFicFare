@@ -472,16 +472,42 @@ try to download.</p>
                             'chapterhash': old_hash,
                             'chapterlastcheck': old_checkdate,
                         }
-                        # insert before first surviving site chapter that
-                        # originally followed this one (append if none)
+                        # Use addChapter() so the chapter dict gets all the
+                        # fields getChapters() expects ('new', 'number',
+                        # 'index04', 'index', 'origtitle', 'toctitle').
+                        # addChapter() appends; then move the chapter into
+                        # its chronological slot, before the first surviving
+                        # site chapter that originally followed it.
+                        self.story.addChapter(dict(preserved_chap), newchap=False)
+                        preserved = self.story.chapters.pop()
                         ch_index = len(self.story.chapters)
-                        for i, ch in enumerate(self.story.chapters):
-                            if ch['url'] in old_urls_in_order:
-                                if old_urls_in_order.index(ch['url']) > old_urls_in_order.index(old_url):
+                        last_survivor_index = -1
+                        for i, existing in enumerate(self.story.chapters):
+                            if existing['url'] in old_urls_in_order:
+                                last_survivor_index = i
+                                if old_urls_in_order.index(existing['url']) > old_urls_in_order.index(old_url):
                                     ch_index = i
                                     break
-                        self.story.chapters.insert(ch_index, preserved_chap)
+                        else:
+                            # No surviving site chapter originally followed
+                            # this one (everything after it on the site was
+                            # deleted).  Insert just after the last surviving
+                            # old chapter so it lands BEFORE brand-new
+                            # chapters instead of after them.
+                            if last_survivor_index >= 0:
+                                ch_index = last_survivor_index + 1
+                        self.story.chapters.insert(ch_index, preserved)
                         logger.info("Preserved deleted chapter: %s" % old_url)
+
+            # Renumber chapters to match the final chronological order so
+            # 'number'/'index04'/'index' (used by chapter_title patterns)
+            # are stable even though preserved chapters were inserted
+            # mid-list. No-op when all chapters were appended in order.
+            for i, ch in enumerate(self.story.chapters):
+                ch['number'] = i + 1
+                num = '%04d' % (i + 1)
+                ch['index04'] = num
+                ch['index'] = num
 
             self.storyDone = True
 
