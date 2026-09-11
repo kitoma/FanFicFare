@@ -537,6 +537,7 @@ try to download.</p>
             self.story.chapter_replaced_count = len(new_urls & self.reupload_replacement_urls)
             self.story.chapter_added_count = len(new_urls) - self.story.chapter_replaced_count
             self.story.chapter_written_count = len(self.story.chapters)
+            logger.info("UPDATE_COUNTERS updated="+str(self.story.chapter_updated_count)+" replaced="+str(self.story.chapter_replaced_count)+" added="+str(self.story.chapter_added_count)+" written="+str(self.story.chapter_written_count)+" old_urls="+str(len(old_urls))+" new_urls="+str(len(new_urls)))
 
             self.storyDone = True
 
