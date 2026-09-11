@@ -345,6 +345,7 @@ class BaseSiteAdapter(Requestable):
                                     if fresh_hash != old_hash:
                                         # Content changed, use fresh version
                                         data = fresh_data
+                                        self.story.chapter_updated_count += 1
                                         logger.info("Chapter %d (%s) content changed, using updated version" % (index+1, url))
                                     else:
                                         # Content unchanged, reuse old

@@ -318,16 +318,30 @@ def do_download_for_worker(book,options,merge,notification=lambda x,y:x):
                                   forceOverwrite=True,
                                   notification=notification)
 
+                updated_count = adapter.story.chapter_updated_count
                 if adapter.story.chapter_error_count > 0:
-                    book['comment'] = _('Update %(fileform)s completed, added %(added)s chapters, %(failed)s failed chapters, for %(total)s total.')%\
-                        {'fileform':options['fileform'],
-                         'failed':adapter.story.chapter_error_count,
-                         'added':(adapter.story.getChapterCount()-chaptercount),
-                         'total':adapter.story.getChapterCount()}
+                    if updated_count > 0:
+                        book['comment'] = _('Update %(fileform)s completed, updated %(updated)s and added %(added)s chapters, %(failed)s failed chapters, for %(total)s total.')%\
+                            {'fileform':options['fileform'],
+                             'updated':updated_count,
+                             'failed':adapter.story.chapter_error_count,
+                             'added':(adapter.story.getChapterCount()-chaptercount),
+                             'total':adapter.story.getChapterCount()}
+                    else:
+                        book['comment'] = _('Update %(fileform)s completed, added %(added)s chapters, %(failed)s failed chapters, for %(total)s total.')%\
+                            {'fileform':options['fileform'],
+                             'failed':adapter.story.chapter_error_count,
+                             'added':(adapter.story.getChapterCount()-chaptercount),
+                             'total':adapter.story.getChapterCount()}
                     book['chapter_error_count'] = adapter.story.chapter_error_count
                 else:
-                    book['comment'] = _('Update %(fileform)s completed, added %(added)s chapters for %(total)s total.')%\
-                        {'fileform':options['fileform'],'added':(adapter.story.getChapterCount()-chaptercount),'total':adapter.story.getChapterCount()}
+                    if updated_count > 0:
+                        book['comment'] = _('Update %(fileform)s completed, updated %(updated)s and added %(added)s chapters for %(total)s total.')%\
+                            {'fileform':options['fileform'],'updated':updated_count,
+                             'added':(adapter.story.getChapterCount()-chaptercount),'total':adapter.story.getChapterCount()}
+                    else:
+                        book['comment'] = _('Update %(fileform)s completed, added %(added)s chapters for %(total)s total.')%\
+                            {'fileform':options['fileform'],'added':(adapter.story.getChapterCount()-chaptercount),'total':adapter.story.getChapterCount()}
                 book['all_metadata'] = story.getAllMetadata(removeallentities=True)
                 if options['savemetacol'] != '':
                     book['savemetacol'] = story.dump_html_metadata()
