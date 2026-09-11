@@ -64,7 +64,7 @@ class FakeSiteAdapter(BaseSiteAdapter):
 
 
 def make_adapter(old_urls, site_chapters, tmp_path, include_images='false',
-                 oldimgs=None):
+                 oldimgs=None, reupload_detection='none'):
     configuration = Configuration(['example.com'], "EPUB", lightweight=True)
     configuration.read(os.path.join(
         os.path.dirname(__file__), '..', '..', 'fanficfare', 'defaults.ini'))
@@ -74,9 +74,9 @@ def make_adapter(old_urls, site_chapters, tmp_path, include_images='false',
         'update_preserve_deleted_chapters:true\n'
         'update_check_recent_chapters:0\n'
         'update_check_chapter_age_days:0\n'
-        'update_reupload_detection:none\n'
+        'update_reupload_detection:%s\n'
         'update_reupload_similarity_threshold:0.8\n'
-        'include_images:%s\n' % include_images)
+        'include_images:%s\n' % (reupload_detection, include_images))
     configuration.read(str(personal))
 
     adapter = FakeSiteAdapter(
@@ -122,6 +122,52 @@ def test_preserved_deleted_written_chapters_have_required_keys(tmp_path):
                          'origtitle', 'toctitle'):
         for ch in adapter.story.chapters:
             assert expected_key in ch, (expected_key, ch['url'])
+
+
+def test_update_counters_preserve_no_reupload(tmp_path):
+    adapter = make_adapter(OLD_URLS, SITE_CHAPTERS, tmp_path)
+    adapter.getStory()
+
+    # No reupload-detection: the one new chapter is a pure addition.
+    assert adapter.story.chapter_written_count == 6
+    assert adapter.story.chapter_added_count == 1
+    assert adapter.story.chapter_replaced_count == 0
+
+
+def test_update_counters_reupload_similarity(tmp_path, monkeypatch):
+    # ch/1 is gone from the site, but its content is reuploaded under the
+    # new ch/6 url. With similarity detection enabled and identical text
+    # (Jaccard 1.0 >= 0.8) ch/6 must count as a replacement, not an
+    # addition; ch/7 is a genuine new chapter.
+    def similar_text(self, url, index):
+        if url == 'http://example.com/story/ch/6':
+            # Same markup as the old ch/1 soup, so the stripped text is
+            # identical to the old chapter's and similarity is 1.0.
+            return '<h3>http://example.com/story/ch/1</h3>' \
+                   '<p>old body http://example.com/story/ch/1</p>'
+        return '<p>new chapter content for %s</p>' % url
+
+    monkeypatch.setattr(FakeSiteAdapter, 'getChapterTextNum', similar_text)
+
+    old_urls = ['http://example.com/story/ch/1',
+                'http://example.com/story/ch/2',
+                'http://example.com/story/ch/3']
+    site = [('B title', 'http://example.com/story/ch/2'),
+            ('C title', 'http://example.com/story/ch/3'),
+            ('F title', 'http://example.com/story/ch/6'),
+            ('G title', 'http://example.com/story/ch/7')]
+    adapter = make_adapter(old_urls, site, tmp_path,
+                           reupload_detection='similarity')
+    adapter.getStory()
+
+    urls = [ch['url'] for ch in adapter.story.chapters]
+    assert urls == ['http://example.com/story/ch/2',
+                    'http://example.com/story/ch/3',
+                    'http://example.com/story/ch/6',
+                    'http://example.com/story/ch/7']
+    assert adapter.story.chapter_written_count == 4
+    assert adapter.story.chapter_added_count == 1
+    assert adapter.story.chapter_replaced_count == 1
 
 
 def test_getChapters_with_preserved_deleted_chapters(tmp_path):

@@ -440,6 +440,7 @@ try to download.</p>
             # but no longer on the site). Preserved chapters are
             # inserted at their original position relative to the
             # remaining site chapters so chronological order is kept.
+            self.reupload_replacement_urls = set()
             if self.getConfig('update_preserve_deleted_chapters') and self.oldchaptersmap:
                 site_urls = set(ch['url'] for ch in self.chapterUrls)
                 old_urls_in_order = list(self.oldchaptersmap.keys())
@@ -467,6 +468,7 @@ try to download.</p>
                                 best_match_url = new_url
                         if best_match_url and best_similarity >= threshold:
                             matched = True
+                            self.reupload_replacement_urls.add(best_match_url)
                             logger.info("Reupload detected: %s similar to %s (%.1f%%), "
                                        "keeping new version only" %
                                        (old_url, best_match_url, best_similarity * 100))
@@ -523,6 +525,18 @@ try to download.</p>
                 num = '%04d' % (i + 1)
                 ch['index04'] = num
                 ch['index'] = num
+
+            # Report the final book's chapter composition: chapters
+            # carried from the old epub, chapters replaced (old chapter
+            # reuploaded under a new url, new version kept), and chapters
+            # genuinely added. Counted after assembly so the totals
+            # reflect the epub that will actually be written.
+            old_urls = set((self.oldchaptersmap or {}).keys())
+            final_urls = {ch['url'] for ch in self.story.chapters}
+            new_urls = final_urls - old_urls
+            self.story.chapter_replaced_count = len(new_urls & self.reupload_replacement_urls)
+            self.story.chapter_added_count = len(new_urls) - self.story.chapter_replaced_count
+            self.story.chapter_written_count = len(self.story.chapters)
 
             self.storyDone = True
 
