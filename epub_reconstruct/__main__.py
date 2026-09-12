@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
 
 import argparse
+import os
 import sys
 
 from .deconstruct import deconstruct
+from .merge import merge
 from .reconstruct import reconstruct
 from .verify import verify
 
@@ -31,6 +33,17 @@ def main(argv=None):
     p.add_argument('new_epub')
     p.add_argument('--parts-dir', default='')
 
+    p = sub.add_parser('merge',
+                       help='merge epubs/parts dirs of the same book')
+    p.add_argument('sources', nargs='+',
+                   help='epubs or parts dirs (base/first = oldest)')
+    p.add_argument('--out', default='',
+                   help='output epub (runs reconstruct)')
+    p.add_argument('--parts-out', default='',
+                   help='write merged parts here instead of temp')
+    p.add_argument('--no-reconstruct', action='store_true',
+                   help='emit parts only, skip epub reconstruction')
+
     args = parser.parse_args(argv)
     if args.command == 'deconstruct':
         deconstruct(args.epub, args.parts_dir)
@@ -40,6 +53,12 @@ def main(argv=None):
         ok = verify(args.orig_epub, args.new_epub,
                     args.parts_dir or None)
         sys.exit(0 if ok else 1)
+    elif args.command == 'merge':
+        parts_out = args.parts_out or None
+        out_epub = args.out or None
+        merge([os.path.abspath(s) for s in args.sources],
+              parts_out=parts_out, out_epub=out_epub,
+              no_reconstruct=args.no_reconstruct)
     else:
         parser.print_help()
         return 1

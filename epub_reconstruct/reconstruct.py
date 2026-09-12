@@ -213,6 +213,10 @@ def _load_images(story, recon):
                                     mime=cover.get('mime', 'image/jpeg'),
                                     data=data, cover=True)
             story.cover = cover['newsrc']
+    # add_img() keeps names already in images/ffdl-*.ext form and
+    # rewrites everything else to images/ffdl-<uuid>.<ext> at write
+    # time; record url -> stored-name so chapter refs can be aligned.
+    img_remap = {}
     for img in recon.get('images', []) or []:
         if img['newsrc'] == (cover or {}).get('newsrc'):
             continue
@@ -220,9 +224,11 @@ def _load_images(story, recon):
         if not data:
             continue
         ext = img['newsrc'].rsplit('.', 1)[-1]
-        story.img_store.add_img(url=img['newsrc'], ext=ext,
-                                mime=img.get('mime', 'image/jpeg'),
-                                data=data, cover=False)
+        info = story.img_store.add_img(url=img['newsrc'], ext=ext,
+                                       mime=img.get('mime', 'image/jpeg'),
+                                       data=data, cover=False)
+        img_remap[img['newsrc']] = info['newsrc']
+    return img_remap
 
 
 def _read_part_bytes(parts_dir, newsrc):
@@ -234,7 +240,7 @@ def _read_part_bytes(parts_dir, newsrc):
         return fh.read()
 
 
-def _load_chapters(story, recon):
+def _load_chapters(story, recon, img_remap=None):
     parts = recon['_parts_dir']
     for rec in recon['chapters']:
         rel = rec['file'].replace('/', os.sep)
@@ -243,6 +249,10 @@ def _load_chapters(story, recon):
             raise DeconstructError('missing chapter body: %s' % rec['file'])
         with open(full, 'r', encoding='utf-8', errors='replace') as fh:
             body = fh.read()
+        for old, new in (img_remap or {}).items():
+            if old != new:
+                body = body.replace('"%s"' % old, '"%s"' % new)
+                body = body.replace("'%s'" % old, "'%s'" % new)
         chap = {
             'url': rec.get('url', ''),
             'title': rec.get('title', ''),
@@ -270,8 +280,8 @@ def reconstruct(parts_dir, out_epub_path):
     conf = _get_configuration(sections, recon)
 
     story = _build_story(conf, recon)
-    _load_images(story, recon)
-    _load_chapters(story, recon)
+    img_remap = _load_images(story, recon)
+    _load_chapters(story, recon, img_remap)
 
     bookmarks = recon.get('calibre_bookmarks') or ''
     if bookmarks:
