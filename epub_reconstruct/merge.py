@@ -2,6 +2,7 @@
 
 import datetime
 import difflib
+import hashlib
 import json
 import os
 import re
@@ -115,6 +116,25 @@ def _read_chapter_body(recon, rec):
 
 def word_count(body):
     return len(re.findall(r'\S+', body or ''))
+
+
+def compute_chapter_hash(html_content):
+    '''Mirror of FanFicFare BaseAdapter.compute_chapter_hash so chapters
+    whose source epub lacked hash metas get the same hash as a fresh
+    site download would produce (keeps the merged epub update-clean).'''
+    if not html_content:
+        return ''
+    try:
+        from bs4 import BeautifulSoup as _BS
+        from fanficfare.htmlcleanup import stripHTML
+        text = stripHTML(_BS(html_content, 'html.parser'))
+    except Exception:
+        try:
+            text = re.sub(r'<[^>]+>', ' ', html_content)
+        except Exception:
+            text = html_content
+    text = re.sub(r'\s+', ' ', text).strip()
+    return hashlib.sha256(text.encode('utf-8')).hexdigest()
 
 
 def _merge_sequences(keys_a, keys_b):
@@ -319,6 +339,21 @@ def merge(source_paths, parts_out=None, out_epub=None, no_reconstruct=False):
                     'sha': rec2['sha'],
                 }
 
+        hash_val = (e['rec'].get('hash') or '').strip()
+        lastcheck = (e['rec'].get('lastcheck') or '').strip()
+        if not hash_val:
+            hash_val = compute_chapter_hash(body)
+            if hash_val:
+                # The chapter was last checked when its source epub was
+                # downloaded, not at merge time: use the source epub's
+                # mtime as the lastcheck timestamp.
+                mt = sources[e['source']].get('epub_mtime')
+                if mt:
+                    lastcheck = datetime.datetime.fromtimestamp(
+                        mt).strftime('%Y-%m-%d %H:%M:%S')
+        hash_source = 'preserved' if (
+            (e['rec'].get('hash') or '').strip()) else 'computed'
+
         chapter_files.append({
             'key': key,
             'id': _key_id_display(key),
@@ -328,6 +363,9 @@ def merge(source_paths, parts_out=None, out_epub=None, no_reconstruct=False):
             'body': new_body,
             'orig_body': body,
             'mapping': mapping,
+            'hash': hash_val,
+            'lastcheck': lastcheck,
+            'hash_source': hash_source,
         })
 
     # Union-carry images never referenced by any surviving body, using
@@ -412,9 +450,11 @@ def merge(source_paths, parts_out=None, out_epub=None, no_reconstruct=False):
         if nset.get(field) is not None:
             settings[field] = nset[field]
 
-    all_chosen = [cf['rec'].get('hash') and cf['rec'].get('lastcheck')
-                  for cf in chapter_files]
-    has_hashes = bool(all_chosen) and all(all_chosen)
+    # Hash-capable template only needs a chapterhash; an empty
+    # chapterlastcheck is written as content="" which FFF treats as
+    # "no recheck window" (update_check_chapter_age_days defaults to 0).
+    has_hashes = bool(chapter_files) and all(
+        cf['hash'] for cf in chapter_files)
 
     recon = {
         'format_version': 1,
@@ -436,8 +476,8 @@ def merge(source_paths, parts_out=None, out_epub=None, no_reconstruct=False):
                                             cf['rec'].get('title', '')),
                 'toctitle': cf['rec'].get('toctitle',
                                           cf['rec'].get('title', '')),
-                'hash': cf['rec'].get('hash', ''),
-                'lastcheck': cf['rec'].get('lastcheck', ''),
+                'hash': cf['hash'],
+                'lastcheck': cf['lastcheck'],
             }
             for cf in chapter_files
         ],
@@ -514,6 +554,8 @@ def merge(source_paths, parts_out=None, out_epub=None, no_reconstruct=False):
                 run_start = i
 
     union_keys = set().union(*[set(s) for s in seqs])
+    hash_source_by_key = {cf['key']: cf['hash_source']
+                          for cf in chapter_files}
     report = {
         'sources': [
             {
@@ -534,11 +576,17 @@ def merge(source_paths, parts_out=None, out_epub=None, no_reconstruct=False):
             len(merged_keys) == len(union_keys),
         'numWords': final_words,
         'hashes_policy': 'keep hashes' if has_hashes else 'hash-free',
+        'hash_counts': {
+            v: sum(1 for cf in chapter_files if cf['hash_source'] == v)
+            for v in ('preserved', 'computed')
+        },
         'selections': {
             '%s' % _key_id_display(key): {
                 'sources': sel['sources'],
                 'identical': sel['identical'],
                 'chosen': sel['chosen']['source'],
+                'hash': hash_source_by_key.get(
+                    key, 'none'),
             }
             for key, sel in sorted(selections.items(),
                                    key=lambda kv: _key_id_display(kv[0]))

@@ -23,10 +23,11 @@ def _img_data(tag):
 def _make_source_parts(base, name, ids, date_updated='2024-01-01T00:00:00',
                        css='body { color: red; }', title='The Book',
                        bodies=None, images=(), image_refs=None, date_created='',
-                       subjects=('Alpha',), slug_map=None):
+                       subjects=('Alpha',), slug_map=None, hashes=None):
     '''Build a merge-ready parts dir: chapters/0001.. files/images and
     reconstruction.json.  ids are RR chapter ids.  bodies overrides the
-    generated '<p>text for <id></p>' per id.'''
+    generated '<p>text for <id></p>' per id.  hashes maps cid ->
+    (chapterhash, lastcheck) to simulate a modern downloaded source.'''
     parts = os.path.join(base, name)
     os.makedirs(os.path.join(parts, 'chapters'), exist_ok=True)
     os.makedirs(os.path.join(parts, 'files', 'OEBPS', 'images'),
@@ -49,14 +50,15 @@ def _make_source_parts(base, name, ids, date_updated='2024-01-01T00:00:00',
             fh.write(body)
         slug = slug_map.get(cid, 'chapter-%d' % cid) if slug_map else \
             'chapter-%d' % cid
+        h, lc = (hashes or {}).get(cid, ('', ''))
         chapters.append({
             'file': 'chapters/%04d.html' % i,
             'url': '%s/%d/%s' % (CHAP_URL, cid, slug),
             'title': 'Chapter %d' % cid,
             'origtitle': 'Chapter %d' % cid,
             'toctitle': 'Chapter %d' % cid,
-            'hash': '',
-            'lastcheck': '',
+            'hash': h,
+            'lastcheck': lc,
         })
 
     image_recs = []
@@ -98,7 +100,7 @@ def _make_source_parts(base, name, ids, date_updated='2024-01-01T00:00:00',
             'series_index': '',
         },
         'subjects': list(subjects),
-        'has_chapter_hashes': False,
+        'has_chapter_hashes': bool(hashes),
         'chapters': chapters,
         'cover': None,
         'images': image_recs,
@@ -393,3 +395,64 @@ def test_full_loop_epub_inputs(tmp_path):
                     r'src="(images/[^"]+)"', body):
                 assert ('OEBPS/' + m.group(1)) in names, (n, m.group(1))
     z.close()
+
+
+def test_hash_preserve_and_fill(tmp_path):
+    from epub_reconstruct.merge import compute_chapter_hash
+
+    h2 = 'a' * 64
+    lc2 = '2024-02-01 12:00:00'
+    p1 = _make_source_parts(str(tmp_path), 'legacy', [1, 2, 3],
+                            date_updated='2024-01-01T00:00:00')
+    p2 = _make_source_parts(str(tmp_path), 'modern', [3, 4, 5],
+                            date_updated='2024-02-01T00:00:00',
+                            hashes={3: (h2, lc2), 4: ('b' * 64, lc2),
+                                    5: ('c' * 64, lc2)})
+    out_dir, report = _run_merge(tmp_path, [p1, p2])
+    recon = json.load(open(os.path.join(out_dir, 'reconstruction.json'),
+                           encoding='utf-8'))
+    assert recon['has_chapter_hashes'] is True
+    assert report['hash_counts'] == {'preserved': 3, 'computed': 2}
+    assert report['hashes_policy'] == 'keep hashes'
+    by_id = {c['url'].rstrip('/').split('/')[-2]: c for c in
+             recon['chapters']}
+    # overlap chapter 3 chosen from modern (newest): stored hash preserved
+    assert by_id['3']['hash'] == h2
+    assert by_id['3']['lastcheck'] == lc2
+    assert report['selections']['3']['hash'] == 'preserved'
+    # legacy-only chapter 1: hash computed from its body
+    body1 = open(os.path.join(out_dir, 'chapters', '0001.html'),
+                 encoding='utf-8').read()
+    assert by_id['1']['hash'] == compute_chapter_hash('<p>body for 1</p>')
+    # computed-hash lastcheck derives from the source epub's mtime,
+    # NOT the merge runtime (the chapter was last checked when the
+    # source epub was downloaded).
+    import datetime as _dt
+    assert by_id['1']['lastcheck'] == _dt.datetime.fromtimestamp(
+        1600000000.0).strftime('%Y-%m-%d %H:%M:%S')
+    assert report['selections']['1']['hash'] == 'computed'
+
+
+def test_hash_computed_without_epub_mtime(tmp_path):
+    p1 = _make_source_parts(str(tmp_path), 'legacy0', [1, 2],
+                            date_updated='2024-01-01T00:00:00')
+    recon_path = os.path.join(p1, 'reconstruction.json')
+    with open(recon_path, encoding='utf-8') as fh:
+        recon = json.load(fh)
+    recon['epub_mtime'] = 0
+    with open(recon_path, 'w', encoding='utf-8') as fh:
+        json.dump(recon, fh)
+    p2 = _make_source_parts(str(tmp_path), 'modern0', [2, 3],
+                            date_updated='2024-02-01T00:00:00',
+                            hashes={2: ('d' * 64, '2024-02-01 12:00:00'),
+                                    3: ('e' * 64, '2024-02-01 12:00:00')})
+    out_dir, report = _run_merge(tmp_path, [p1, p2])
+    recon = json.load(open(os.path.join(out_dir, 'reconstruction.json'),
+                           encoding='utf-8'))
+    # hash still written even though lastcheck is unknown (no mtime)
+    assert recon['has_chapter_hashes'] is True
+    assert report['hashes_policy'] == 'keep hashes'
+    by_id = {c['url'].rstrip('/').split('/')[-2]: c for c in
+             recon['chapters']}
+    assert by_id['1']['hash']
+    assert by_id['1']['lastcheck'] == ''
