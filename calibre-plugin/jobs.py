@@ -311,9 +311,38 @@ def do_download_for_worker(book,options,merge,notification=lambda x,y:x):
                     chaptercount = adapter.hookForUpdates(chaptercount)
 
                 logger.info("Do update - epub(%d) vs url(%d)" % (chaptercount, urlchaptercount))
-                logger.info("write to %s"%outfile)
 
                 inject_cal_cols(book,story,configuration)
+
+                # Fetch the story now (previously only inside writeStory) so we
+                # can tell whether anything actually changed before committing a
+                # write & library update.  writeStory guards against a second
+                # fetch once the story is loaded.
+                adapter.getStory(notification)
+                if book['collision'] == UPDATE and \
+                        adapter.story.chapter_updated_count == 0 and \
+                        adapter.story.chapter_replaced_count == 0 and \
+                        adapter.story.chapter_added_count == 0 and \
+                        adapter.story.chapter_error_count == 0 and \
+                        adapter.story.chapter_written_count == chaptercount:
+                    if chaptercount == urlchaptercount:
+                        contains_msg = _("Already contains %d chapters.")%chaptercount
+                        merge_msg = _("Already contains %d chapters.  Reuse as is.")%chaptercount
+                    else:
+                        contains_msg = _("Already contains %d chapters, site only has %d.")%(chaptercount,urlchaptercount)
+                        merge_msg = _("Already contains %d chapters, site only has %d.  Reuse as is.")%(chaptercount,urlchaptercount)
+                    if merge:
+                        ## Reuse existing epub unchanged for anthology merge ops.
+                        book['comment']=merge_msg
+                        book['all_metadata'] = story.getAllMetadata(removeallentities=True)
+                        if options['savemetacol'] != '':
+                            book['savemetacol'] = story.dump_html_metadata()
+                        book['outfile'] = book['epub_for_update'] # for anthology merge ops.
+                        return book
+                    else:
+                        raise NotGoingToDownload(contains_msg,'edit-undo.png',showerror=False)
+
+                logger.info("write to %s"%outfile)
                 writer.writeStory(outfilename=outfile,
                                   forceOverwrite=True,
                                   notification=notification)
