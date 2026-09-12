@@ -468,3 +468,41 @@ def test_staged_update_flow(tmp_path):
         else:
             # brand-new chapters 5..12.
             assert 'chapter %d:' % num in text and '[[UPD2]]' in text
+
+
+def test_preserved_deleted_chapter_keeps_title(tmp_path):
+    # Regression: a preserved (deleted-from-site) chapter must keep its
+    # real title.  epubutils.get_update_data strips the leading
+    # fff_chapter_title h3 from the stored soup, so the preserve path
+    # must fall back to the <meta name="chaptertitle"> in
+    # oldchaptersdata instead of the URL slug.  Without the fix the
+    # preserved "Chapter 2" would come back as the slug "2".
+    config = staged_config(tmp_path)
+
+    s0 = {1: '<p>chapter 1: a [[INIT]]</p>',
+          2: '<p>chapter 2: b [[INIT]]</p>',
+          3: '<p>chapter 3: c [[INIT]]</p>'}
+    initial = staged_download(config, s0)
+
+    def chapter_body_num(epub_bytes, num):
+        zf = zipfile.ZipFile(io.BytesIO(epub_bytes))
+        for n in sorted(n for n in zf.namelist()
+                        if re.match(r'^OEBPS/file\d+\.xhtml$', n)):
+            data = zf.read(n).decode('utf-8')
+            if '<meta name="chapterurl" content="%s"' % (CH % num) in data:
+                return data
+        return None
+
+    assert '<h3 class="fff_chapter_title">Chapter 2</h3>' in \
+        chapter_body_num(initial, 2)
+
+    # Second update: site deletes ch1 and ch2 (keeps ch3, adds ch4).
+    s1 = {3: s0[3], 4: '<p>chapter 4: d [[NEW1]]</p>'}
+    updated = staged_update(config, initial, s1)
+
+    # ch2 is preserved from the deleted chapter and keeps its title.
+    body2 = chapter_body_num(updated, 2)
+    assert body2 is not None, 'deleted chapter was not preserved'
+    assert '<h3 class="fff_chapter_title">Chapter 2</h3>' in body2, \
+        'preserved chapter title was slug-ified'
+    assert '<meta name="chaptertitle" content="Chapter 2" />' in body2

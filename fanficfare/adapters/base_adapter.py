@@ -477,11 +477,22 @@ try to download.</p>
                         # Preserve this chapter as a deleted chapter
                         old_hash = (self.oldchapterhashes or {}).get(old_url, '')
                         old_checkdate = (self.oldchaptercheckdates or {}).get(old_url, '')
-                        # Extract title from old soup if possible
-                        old_title = old_url.split('/')[-1].replace('-', ' ').replace('_', ' ')
-                        old_h3 = old_soup.find('h3') if old_soup else None
-                        if old_h3:
-                            old_title = old_h3.get_text(strip=True)
+                        # Restore the chapter's real title.  The old soup
+                        # no longer carries it (epubutils.get_update_data
+                        # strips the leading fff_chapter_title heading), so
+                        # prefer the chaptertitle/origtitle recorded in the
+                        # epub's <meta> tags, then any h3 left in the old
+                        # soup, then the URL slug as a last resort.
+                        old_data = self.oldchaptersdata.get(old_url, {}) \
+                            if self.oldchaptersdata else {}
+                        old_title = old_data.get('chaptertitle') or \
+                            old_data.get('chapterorigtitle')
+                        if not old_title:
+                            old_h3 = old_soup.find('h3') if old_soup else None
+                            if old_h3:
+                                old_title = old_h3.get_text(strip=True)
+                        if not old_title:
+                            old_title = old_url.split('/')[-1].replace('-', ' ').replace('_', ' ')
                         preserved_chap = {
                             'url': old_url,
                             'title': old_title,
