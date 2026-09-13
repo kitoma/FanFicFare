@@ -14,7 +14,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(
         prog='epub_reconstruct',
         description='Deconstruct an FFF epub and reconstruct it via the '
-                    'FanFicFare EpubWriter, then verify the round trip.')
+                    'FanFicFare EpubWriter, and merge epubs/parts dirs of '
+                    'the same book.')
     sub = parser.add_subparsers(dest='command')
 
     p = sub.add_parser('deconstruct',
