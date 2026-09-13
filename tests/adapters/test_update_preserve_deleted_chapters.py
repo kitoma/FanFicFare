@@ -1,0 +1,261 @@
+"""Offline tests for preserved-deleted-chapter handling (incl. reupload
+detection) of the incremental-update feature.
+
+Everything is served by the shared staged adapters in update_harness so
+no network fetching takes place.
+"""
+import io
+import re
+import zipfile
+
+from bs4 import BeautifulSoup
+
+from fanficfare.writers.writer_epub import EpubWriter as WriterFic
+
+from tests.adapters.update_harness import (CH, OLD_URLS, SITE_CHAPTERS,
+                                           FakeSiteAdapter, make_adapter,
+                                           read_chapters, staged_config,
+                                           staged_download, staged_update)
+
+
+def test_preserved_deleted_written_chapters_have_required_keys(tmp_path):
+    adapter = make_adapter(OLD_URLS, SITE_CHAPTERS, tmp_path)
+    adapter.getStory()
+
+    urls = [ch['url'] for ch in adapter.story.chapters]
+    assert urls == OLD_URLS + ['http://example.com/story/ch/6']
+
+    # Regression: every chapter dict must carry the keys that
+    # Story.getChapters() reads unconditionally (the real-world run
+    # crashed here with KeyError: 'new').
+    for expected_key in ('new', 'number', 'index04', 'index',
+                         'origtitle', 'toctitle'):
+        for ch in adapter.story.chapters:
+            assert expected_key in ch, (expected_key, ch['url'])
+
+
+def test_update_counters_preserve_no_reupload(tmp_path):
+    adapter = make_adapter(OLD_URLS, SITE_CHAPTERS, tmp_path)
+    adapter.getStory()
+
+    # No reupload-detection: the one new chapter is a pure addition.
+    assert adapter.story.chapter_written_count == 6
+    assert adapter.story.chapter_added_count == 1
+    assert adapter.story.chapter_replaced_count == 0
+
+
+def test_update_counters_reupload_similarity(tmp_path, monkeypatch):
+    # ch/1 is gone from the site, but its content is reuploaded under the
+    # new ch/6 url. With similarity detection enabled and identical text
+    # (Jaccard 1.0 >= 0.8) ch/6 must count as a replacement, not an
+    # addition; ch/7 is a genuine new chapter.
+    def similar_text(self, url, index):
+        if url == 'http://example.com/story/ch/6':
+            # Same markup as the old ch/1 soup, so the stripped text is
+            # identical to the old chapter's and similarity is 1.0.
+            return '<h3>http://example.com/story/ch/1</h3>' \
+                   '<p>old body http://example.com/story/ch/1</p>'
+        return '<p>new chapter content for %s</p>' % url
+
+    monkeypatch.setattr(FakeSiteAdapter, 'getChapterTextNum', similar_text)
+
+    old_urls = ['http://example.com/story/ch/1',
+                'http://example.com/story/ch/2',
+                'http://example.com/story/ch/3']
+    site = [('B title', 'http://example.com/story/ch/2'),
+            ('C title', 'http://example.com/story/ch/3'),
+            ('F title', 'http://example.com/story/ch/6'),
+            ('G title', 'http://example.com/story/ch/7')]
+    adapter = make_adapter(old_urls, site, tmp_path,
+                           reupload_detection='similarity')
+    adapter.getStory()
+
+    urls = [ch['url'] for ch in adapter.story.chapters]
+    assert urls == ['http://example.com/story/ch/2',
+                    'http://example.com/story/ch/3',
+                    'http://example.com/story/ch/6',
+                    'http://example.com/story/ch/7']
+    assert adapter.story.chapter_written_count == 4
+    assert adapter.story.chapter_added_count == 1
+    assert adapter.story.chapter_replaced_count == 1
+
+
+def test_getChapters_with_preserved_deleted_chapters(tmp_path):
+    adapter = make_adapter(OLD_URLS, SITE_CHAPTERS, tmp_path)
+    adapter.getStory()
+
+    chapters = adapter.story.getChapters(fortoc=True)
+    assert [c['url'] for c in chapters] == \
+        OLD_URLS + ['http://example.com/story/ch/6']
+
+
+def test_write_epub_with_preserved_deleted_chapters(tmp_path):
+    adapter = make_adapter(OLD_URLS, SITE_CHAPTERS, tmp_path)
+    adapter.getStory()
+
+    writer = WriterFic(adapter.configuration, adapter)
+    writer.writeStory(outstream=io.BytesIO())
+
+    # Writing again (like an update run) must also succeed.
+    writer = WriterFic(adapter.configuration, adapter)
+    writer.writeStory(outstream=io.BytesIO())
+
+
+def test_preserved_deleted_chapter_images_preserved(tmp_path):
+    # A preserved (deleted-from-site) chapter that contains an image.
+    # The real update path hands us the old soup with img src already
+    # reset to longdesc (the original URL) by epubutils.get_update_data,
+    # plus adapter.oldimgs holding the old epub's image bytes keyed by
+    # that longdesc URL -- so re-processing must find the image in the
+    # store and NOT try to re-download it.
+    img_url = 'https://img.example.com/pic.jpg'
+    old_chapters = {'http://example.com/story/ch/1':
+                    '<h3>Chapter One</h3><p>old body</p>'
+                    '<img alt="pic" src="%s" longdesc="%s"/>'
+                    % (img_url, img_url)}
+    old_imgs = {img_url: ('OEBPS/images/pic.jpg', b'\xff\xd8fakejpeg')}
+
+    adapter = make_adapter(list(old_chapters), SITE_CHAPTERS, tmp_path,
+                           include_images='true', oldimgs=old_imgs)
+    adapter.oldchaptersmap = {u: BeautifulSoup(html, 'html.parser')
+                              for u, html in old_chapters.items()}
+    adapter.getStory()
+
+    out = io.BytesIO()
+    writer = WriterFic(adapter.configuration, adapter)
+    writer.writeStory(outstream=out)
+
+    zf = zipfile.ZipFile(io.BytesIO(out.getvalue()))
+    chaps = [n for n in zf.namelist() if n.startswith('OEBPS/file')
+             and n.endswith('.xhtml')]
+    img_files = [n for n in zf.namelist() if n.startswith('OEBPS/images/')]
+    assert img_files, 'preserved chapter image was not written to epub'
+    assert any('<img' in zf.read(c).decode('utf-8', 'replace')
+               for c in chaps), \
+        'preserved chapter image tag was dropped from html'
+    # src rewritten to the local stored file -- not a remote URL.
+    preserved_body = zf.read(chaps[0]).decode('utf-8', 'replace')
+    for c in chaps:
+        body = zf.read(c).decode('utf-8', 'replace')
+        if '<img' in body:
+            preserved_body = body
+            break
+    assert 'src="images/' in preserved_body
+    # longdesc keeps the original URL (by design), but src must point at
+    # the local stored file -- not the remote URL.
+    srcs = re.findall(r'src="([^"]+)"', preserved_body)
+    assert srcs and all(s.startswith('images/') for s in srcs), \
+        'img src must be rewritten to local stored file'
+
+
+def test_preserved_deleted_chapter_keeps_title(tmp_path):
+    # Regression: a preserved (deleted-from-site) chapter must keep its
+    # real title.  epubutils.get_update_data strips the leading
+    # fff_chapter_title h3 from the stored soup, so the preserve path
+    # must fall back to the <meta name="chaptertitle"> in
+    # oldchaptersdata instead of the URL slug.  Without the fix the
+    # preserved "Chapter 2" would come back as the slug "2".
+    config = staged_config(tmp_path)
+
+    s0 = {1: '<p>chapter 1: a [[INIT]]</p>',
+          2: '<p>chapter 2: b [[INIT]]</p>',
+          3: '<p>chapter 3: c [[INIT]]</p>'}
+    initial = staged_download(config, s0)
+
+    def chapter_body_num(epub_bytes, num):
+        zf = zipfile.ZipFile(io.BytesIO(epub_bytes))
+        for n in sorted(n for n in zf.namelist()
+                        if re.match(r'^OEBPS/file\d+\.xhtml$', n)):
+            data = zf.read(n).decode('utf-8')
+            if '<meta name="chapterurl" content="%s"' % (CH % num) in data:
+                return data
+        return None
+
+    assert '<h3 class="fff_chapter_title">Chapter 2</h3>' in \
+        chapter_body_num(initial, 2)
+
+    # Second update: site deletes ch1 and ch2 (keeps ch3, adds ch4).
+    s1 = {3: s0[3], 4: '<p>chapter 4: d [[NEW1]]</p>'}
+    updated = staged_update(config, initial, s1)
+
+    # ch2 is preserved from the deleted chapter and keeps its title.
+    body2 = chapter_body_num(updated, 2)
+    assert body2 is not None, 'deleted chapter was not preserved'
+    assert '<h3 class="fff_chapter_title">Chapter 2</h3>' in body2, \
+        'preserved chapter title was slug-ified'
+    assert '<meta name="chaptertitle" content="Chapter 2" />' in body2
+
+
+"""
+testcase scenario:
+
+- initial download: site has chapters 1..3 ("a","b","c"), each carrying
+  an [[INIT]] marker; epub downloaded and markers verified.
+- first update: site now has 4 chapters -- 1 and 2 unchanged, 3 updated
+  ([[UPD1]] marker), 4 brand new ([[NEW1]]).  The working copy is the
+  initial epub, unmodified.  Expected: ch1 and ch2 untouched, ch3 keeps
+  its old [[INIT]] content (the site edit is not adopted), ch4 appended.
+- second update: site deleted chapters 1 and 2 and added 8 more (5..12,
+  each with [[UPD2]]); ch3 kept; ch4 updated ([[UPD2]] marker).  The
+  working copy is the first-update epub, unmodified.  Expected: ch1 and
+  ch2 preserved despite deletion, ch3 still present with its old [[INIT]]
+  content, ch4 still present with its previous [[NEW1]] content, ch5..12
+  appended.
+
+  Identity is checked by comparing content (markers), and with edit
+  checks not yet implemented the previously-downloaded chapter is
+  authoritative, so the site's updated content must not appear.
+"""
+def test_staged_update_flow(tmp_path):
+    config = staged_config(tmp_path)
+
+    s0 = {1: '<p>chapter 1: a [[INIT]]</p>',
+          2: '<p>chapter 2: b [[INIT]]</p>',
+          3: '<p>chapter 3: c [[INIT]]</p>'}
+    initial = staged_download(config, s0)
+    got = read_chapters(initial)
+    assert [u for u, _ in got] == [CH % n for n in (1, 2, 3)]
+    for n, (_, text) in zip((1, 2, 3), got):
+        assert 'chapter %d' % n in text and '[[INIT]]' in text
+
+    # first update: site gains ch4 (new) and ch3 is edited ([[UPD1]]).
+    s1 = {1: s0[1],
+          2: s0[2],
+          3: '<p>chapter 3: c [[UPD1]]</p>',
+          4: '<p>chapter 4: d [[NEW1]]</p>'}
+    first = staged_update(config, initial, s1)
+    got = read_chapters(first)
+    assert [u for u, _ in got] == [CH % n for n in (1, 2, 3, 4)]
+    for url, text in got:
+        num = int(url.rsplit('/', 1)[1])
+        if num in (1, 2):
+            assert '[[INIT]]' in text and '[[UPD1]]' not in text, \
+                'chapter %d was rewritten despite being unchanged' % num
+        elif num == 3:
+            assert '[[INIT]]' in text and '[[UPD1]]' not in text, \
+                'ch3 adopted the site edit instead of keeping old content'
+        else:
+            assert 'chapter 4: d [[NEW1]]' in text
+
+    # second update: site deletes ch1/ch2, keeps ch3, edits ch4 ([[UPD2]]),
+    # and adds ch5..12 (each [[UPD2]]).  Working copy = first-update epub.
+    s2 = {3: s1[3],
+          4: '<p>chapter 4: d [[UPD2]]</p>'}
+    s2.update({n: '<p>chapter %d: %s [[UPD2]]</p>' % (n, chr(96 + n))
+               for n in range(5, 13)})
+    second = staged_update(config, first, s2)
+    got = read_chapters(second)
+    assert [u for u, _ in got] == [CH % n for n in range(1, 13)]
+    for url, text in got:
+        num = int(url.rsplit('/', 1)[1])
+        if num in (1, 2):
+            assert '[[INIT]]' in text and '[[UPD2]]' not in text, \
+                'deleted chapter %d was not preserved' % num
+        elif num == 3:
+            assert '[[INIT]]' in text and '[[UPD1]]' not in text, \
+                'ch3 adopted the site edit instead of keeping old content'
+        elif num == 4:
+            assert '[[NEW1]]' in text and '[[UPD2]]' not in text, \
+                'ch4 adopted the site edit instead of keeping old content'
+        else:
+            assert 'chapter %d:' % num in text and '[[UPD2]]' in text
