@@ -279,13 +279,16 @@ def do_download_for_worker(book,options,merge,notification=lambda x,y:x):
                  adapter.calibrebookmark,
                  adapter.logfile,
                  adapter.oldchaptersmap,
-                 adapter.oldchaptersdata) = get_update_data(book['epub_for_update'])[0:9]
+                 adapter.oldchaptersdata,
+                 adapter.oldchapterhashes,
+                 adapter.oldchaptercheckdates) = get_update_data(book['epub_for_update'])[0:11]
 
                 # dup handling from fff_plugin needed for anthology updates & BG metadata.
                 if book['collision'] in (UPDATE,UPDATEALWAYS):
+                    needs_edit_check = adapter.recheck_active()
                     preserve_deleted = adapter.preserve_deleted_chapters()
 
-                    if chaptercount == urlchaptercount and book['collision'] == UPDATE:
+                    if chaptercount == urlchaptercount and book['collision'] == UPDATE and not needs_edit_check:
                         if merge:
                             ## Deliberately pass for UPDATEALWAYS merge.
                             book['comment']=_("Already contains %d chapters.  Reuse as is.")%chaptercount
@@ -308,12 +311,14 @@ def do_download_for_worker(book,options,merge,notification=lambda x,y:x):
                 logger.info("Do update - epub(%d) vs url(%d)" % (chaptercount, urlchaptercount))
 
                 inject_cal_cols(book,story,configuration)
+
                 # Fetch the story now (previously only inside writeStory) so we
                 # can tell whether anything actually changed before committing a
                 # write & library update.  writeStory guards against a second
                 # fetch once the story is loaded.
                 adapter.getStory(notification)
                 if book['collision'] == UPDATE and \
+                        adapter.story.chapter_updated_count == 0 and \
                         adapter.story.chapter_replaced_count == 0 and \
                         adapter.story.chapter_added_count == 0 and \
                         adapter.story.chapter_error_count == 0 and \
@@ -340,13 +345,23 @@ def do_download_for_worker(book,options,merge,notification=lambda x,y:x):
                                   forceOverwrite=True,
                                   notification=notification)
 
+                updated_count = adapter.story.chapter_updated_count
                 added_count = adapter.story.chapter_added_count
                 replaced_count = adapter.story.chapter_replaced_count
                 total_count = adapter.story.chapter_written_count
                 failed_count = adapter.story.chapter_error_count
 
                 if failed_count > 0:
-                    if replaced_count > 0:
+                    if updated_count > 0 and replaced_count > 0:
+                        book['comment'] = _('Update %(fileform)s completed, updated %(updated)s, replaced %(replaced)s and added %(added)s chapters, %(failed)s failed chapters, for %(total)s total.') % \
+                            {'fileform': options['fileform'], 'updated': updated_count,
+                             'replaced': replaced_count, 'added': added_count,
+                             'failed': failed_count, 'total': total_count}
+                    elif updated_count > 0:
+                        book['comment'] = _('Update %(fileform)s completed, updated %(updated)s and added %(added)s chapters, %(failed)s failed chapters, for %(total)s total.') % \
+                            {'fileform': options['fileform'], 'updated': updated_count,
+                             'added': added_count, 'failed': failed_count, 'total': total_count}
+                    elif replaced_count > 0:
                         book['comment'] = _('Update %(fileform)s completed, replaced %(replaced)s and added %(added)s chapters, %(failed)s failed chapters, for %(total)s total.') % \
                             {'fileform': options['fileform'], 'replaced': replaced_count,
                              'added': added_count, 'failed': failed_count, 'total': total_count}
@@ -356,7 +371,15 @@ def do_download_for_worker(book,options,merge,notification=lambda x,y:x):
                              'failed': failed_count, 'total': total_count}
                     book['chapter_error_count'] = failed_count
                 else:
-                    if replaced_count > 0:
+                    if updated_count > 0 and replaced_count > 0:
+                        book['comment'] = _('Update %(fileform)s completed, updated %(updated)s, replaced %(replaced)s and added %(added)s chapters for %(total)s total.') % \
+                            {'fileform': options['fileform'], 'updated': updated_count,
+                             'replaced': replaced_count, 'added': added_count, 'total': total_count}
+                    elif updated_count > 0:
+                        book['comment'] = _('Update %(fileform)s completed, updated %(updated)s and added %(added)s chapters for %(total)s total.') % \
+                            {'fileform': options['fileform'], 'updated': updated_count,
+                             'added': added_count, 'total': total_count}
+                    elif replaced_count > 0:
                         book['comment'] = _('Update %(fileform)s completed, replaced %(replaced)s and added %(added)s chapters for %(total)s total.') % \
                             {'fileform': options['fileform'], 'replaced': replaced_count,
                              'added': added_count, 'total': total_count}

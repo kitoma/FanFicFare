@@ -214,8 +214,8 @@ def test_staged_update_flow(tmp_path):
           3: '<p>chapter 3: c [[INIT]]</p>'}
     initial = staged_download(config, s0)
     got = read_chapters(initial)
-    assert [u for u, _ in got] == [CH % n for n in (1, 2, 3)]
-    for n, (_, text) in zip((1, 2, 3), got):
+    assert [u for u, _, _ in got] == [CH % n for n in (1, 2, 3)]
+    for n, (_, _, text) in zip((1, 2, 3), got):
         assert 'chapter %d' % n in text and '[[INIT]]' in text
 
     # first update: site gains ch4 (new) and ch3 is edited ([[UPD1]]).
@@ -225,8 +225,8 @@ def test_staged_update_flow(tmp_path):
           4: '<p>chapter 4: d [[NEW1]]</p>'}
     first = staged_update(config, initial, s1)
     got = read_chapters(first)
-    assert [u for u, _ in got] == [CH % n for n in (1, 2, 3, 4)]
-    for url, text in got:
+    assert [u for u, _, _ in got] == [CH % n for n in (1, 2, 3, 4)]
+    for url, _, text in got:
         num = int(url.rsplit('/', 1)[1])
         if num in (1, 2):
             assert '[[INIT]]' in text and '[[UPD1]]' not in text, \
@@ -245,8 +245,8 @@ def test_staged_update_flow(tmp_path):
                for n in range(5, 13)})
     second = staged_update(config, first, s2)
     got = read_chapters(second)
-    assert [u for u, _ in got] == [CH % n for n in range(1, 13)]
-    for url, text in got:
+    assert [u for u, _, _ in got] == [CH % n for n in range(1, 13)]
+    for url, _, text in got:
         num = int(url.rsplit('/', 1)[1])
         if num in (1, 2):
             assert '[[INIT]]' in text and '[[UPD2]]' not in text, \
@@ -284,7 +284,7 @@ def _chapter_snapshot(epub_bytes):
     """
     return [(int(url.rsplit('/', 1)[1]),
              re.search(r'\[\[([^\]]+)\]\]', text).group(1))
-            for url, text in read_chapters(epub_bytes)]
+            for url, _, text in read_chapters(epub_bytes)]
 
 
 def test_staged_update_flow_mixed_deletions_1(tmp_path):
