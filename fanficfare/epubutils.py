@@ -158,6 +158,7 @@ def get_update_data(inputio,
     urlsoups = {} # map of xhtml blocks by url
     images = {} # dict() longdesc->(epubsrc, data)
     datamaps = defaultdict(dict) # map of data maps by url
+    chapterhashes = {} # map of url -> content hash
     if getfilecount:
         # spin through the manifest--only place there are item tags.
         for item in contentdom.getElementsByTagName("item"):
@@ -285,6 +286,10 @@ def get_update_data(inputio,
                         if chaptertitle:
                             datamaps[currenturl]['chaptertitle'] = chaptertitle['content']
 
+                        chapterhash = soup.find('meta',{'name':'chapterhash'})
+                        if chapterhash and currenturl:
+                            chapterhashes[currenturl] = chapterhash['content']
+
                         soups.append(bodysoup)
 
                     filecount+=1
@@ -352,7 +357,7 @@ def get_update_data(inputio,
     #for k in images.keys():
         #print("\tlongdesc:%s\n\tData len:%s\n"%(k,len(images[k])))
     #print("datamaps:%s"%datamaps)
-    return (source,filecount,soups,images,oldcover,calibrebookmark,logfile,urlsoups,datamaps)
+    return (source,filecount,soups,images,oldcover,calibrebookmark,logfile,urlsoups,datamaps,chapterhashes)
 
 def get_path_part(n):
     relpath = os.path.dirname(n)
