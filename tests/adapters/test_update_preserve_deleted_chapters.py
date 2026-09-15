@@ -222,3 +222,192 @@ def test_staged_update_flow(tmp_path):
                 'ch4 adopted the site edit instead of keeping old content'
         else:
             assert 'chapter %d:' % num in text and '[[UPD2]]' in text
+def _site(*groups):
+    """Build a site content dict from (nums, tag) groups.
+
+    Chapter number n maps to url CH % n and body 'chapter n [[TAG]]'.
+    Surviving chapters keep their tag between updates so their content
+    is byte-identical and no edit-detection re-download is triggered.
+    """
+    content = {}
+    for nums, tag in groups:
+        for n in nums:
+            content[n] = '<p>chapter %d [[%s]]</p>' % (n, tag)
+    return content
+
+
+def _chapter_snapshot(epub_bytes):
+    """[(num, tag), ...] in epub reading order (== final written order).
+
+    read_chapters() yields chapters in OEBPS/fileN.xhtml order, and the
+    writer renumbers chapters before writing, so this gives the exact
+    final chapter order of the epub -- enabling strict order assertions.
+    """
+    return [(int(url.rsplit('/', 1)[1]),
+             re.search(r'\[\[([^\]]+)\]\]', text).group(1))
+            for url, text in read_chapters(epub_bytes)]
+
+
+def test_staged_update_flow_mixed_deletions_1(tmp_path):
+    """scenario mixed-deletions-1: chapters deleted in the middle and at
+    the end
+
+    Ordering is verified explicitly: every step asserts the full ordered
+    [num, tag] list of the resulting epub, not mere membership.
+
+    - the site has 20 chapters (1..20)
+    - initial download: all chapters in epub
+    - the site deletes chapters (6..15)
+    - (first) epub update: all preserved, all in correct order
+    - the site adds 10 chapters (21..30)
+    - (second) epub update: all 20 preserved, all 10 new, all in correct order
+    - the site deleted chapters (19..28)
+    - (third) epub update: all 30 preserved, all in correct order
+    - the site adds 5 chapters (31..35)
+    - epub update: all 30 preserved, all 5 new, all in correct order
+    - the site deleted all but the first 5 chapters (only 1..5 remain on the site)
+    - epub update: all 35 preserved, all in correct order
+    """
+    config = staged_config(tmp_path)
+
+    initial = staged_download(config, _site((range(1, 21), 'INIT')))
+    assert _chapter_snapshot(initial) == [(n, 'INIT') for n in range(1, 21)]
+
+    # site deletes 6..15.
+    u1 = staged_update(config, initial,
+                       _site((range(1, 6), 'INIT'), (range(16, 21), 'INIT')))
+    assert _chapter_snapshot(u1) == [(n, 'INIT') for n in range(1, 21)]
+
+    # site adds 21..30.
+    u2 = staged_update(config, u1,
+                       _site((range(1, 6), 'INIT'), (range(16, 21), 'INIT'),
+                             (range(21, 31), 'NEW1')))
+    assert _chapter_snapshot(u2) == \
+        [(n, 'INIT') for n in range(1, 21)] + \
+        [(n, 'NEW1') for n in range(21, 31)]
+
+    # site deletes 19..28.
+    u3 = staged_update(config, u2,
+                       _site((range(1, 6), 'INIT'), (range(16, 19), 'INIT'),
+                             (range(29, 31), 'NEW1')))
+    assert _chapter_snapshot(u3) == \
+        [(n, 'INIT') for n in range(1, 21)] + \
+        [(n, 'NEW1') for n in range(21, 31)]
+
+    # site adds 31..35.
+    u4 = staged_update(config, u3,
+                       _site((range(1, 6), 'INIT'), (range(16, 19), 'INIT'),
+                             (range(29, 31), 'NEW1'), (range(31, 36), 'NEW2')))
+    assert _chapter_snapshot(u4) == \
+        [(n, 'INIT') for n in range(1, 21)] + \
+        [(n, 'NEW1') for n in range(21, 31)] + \
+        [(n, 'NEW2') for n in range(31, 36)]
+
+    # site deletes all but the first 5 chapters (1..5 remain).
+    u5 = staged_update(config, u4, _site((range(1, 6), 'INIT')))
+    assert _chapter_snapshot(u5) == \
+        [(n, 'INIT') for n in range(1, 21)] + \
+        [(n, 'NEW1') for n in range(21, 31)] + \
+        [(n, 'NEW2') for n in range(31, 36)]
+
+
+def test_staged_update_flow_mixed_deletions_2(tmp_path):
+    """scenario mixed-deletions-2: same sequence of deletions, but fewer
+    updates, same consistent preservation
+
+    Multiple site changes are batched into each epub update.  Ordering
+    verified via the full ordered [num, tag] list at each step.
+
+    - the site has 20 chapters (1..20)
+    - initial download: all chapters in epub
+    - the site deletes chapters (6..15)
+    - the site adds 10 chapters (21..30)
+    - epub update: all 20 preserved, all 10 new, all in correct order
+    - the site deleted chapters (19..28)
+    - the site adds 5 chapters (31..35)
+    - epub update: all 30 preserved, all 5 new, all in correct order
+    - (we can skip the final update, already covered in mixed-deletions-1)
+    """
+    config = staged_config(tmp_path)
+
+    initial = staged_download(config, _site((range(1, 21), 'INIT')))
+    assert _chapter_snapshot(initial) == [(n, 'INIT') for n in range(1, 21)]
+
+    # site deletes 6..15 and adds 21..30 before this update.
+    u1 = staged_update(config, initial,
+                       _site((range(1, 6), 'INIT'), (range(16, 21), 'INIT'),
+                             (range(21, 31), 'NEW1')))
+    assert _chapter_snapshot(u1) == \
+        [(n, 'INIT') for n in range(1, 21)] + \
+        [(n, 'NEW1') for n in range(21, 31)]
+
+    # site deletes 19..28 and adds 31..35 before this update.
+    u2 = staged_update(config, u1,
+                       _site((range(1, 6), 'INIT'), (range(16, 19), 'INIT'),
+                             (range(29, 31), 'NEW1'), (range(31, 36), 'NEW2')))
+    assert _chapter_snapshot(u2) == \
+        [(n, 'INIT') for n in range(1, 21)] + \
+        [(n, 'NEW1') for n in range(21, 31)] + \
+        [(n, 'NEW2') for n in range(31, 36)]
+
+
+def test_staged_update_flow_mixed_deletions_3(tmp_path):
+    """scenario mixed-deletions-3: different sequence, no re-upload detection
+
+    Chapters are already missing from the site before the initial
+    download, and later deletions are always offset by additions; no
+    chapter is ever re-uploaded.  Ordering verified via the full ordered
+    [num, tag] list at each step.
+
+    - the site has 20 chapters (1..20)
+    - the site deleted 1..3
+    - initial download: chapters 4..20 are in epub
+    - the site adds 10 chapters (21..30)
+    - epub update: chapters 4..30 in epub, in order
+    - the site deleted 10 (4..13) and adds 10 chapters (31..40)
+    - epub update: chapters 4..40 in epub, in order
+    - the site deleted 5 in the middle (21..25) and adds 3 chapters (41..43)
+    - epub update: chapters 4..43 in epub, in order
+    - the site deleted all chapters except numbers 16, 18, 26 and 42
+    - epub update: chapters 4..43 in epub, in order
+    """
+    config = staged_config(tmp_path)
+
+    initial = staged_download(config, _site((range(4, 21), 'INIT')))
+    assert _chapter_snapshot(initial) == [(n, 'INIT') for n in range(4, 21)]
+
+    # site adds 21..30.
+    u1 = staged_update(config, initial,
+                       _site((range(4, 21), 'INIT'), (range(21, 31), 'NEW1')))
+    assert _chapter_snapshot(u1) == \
+        [(n, 'INIT') for n in range(4, 21)] + \
+        [(n, 'NEW1') for n in range(21, 31)]
+
+    # site deletes 4..13 and adds 31..40.
+    u2 = staged_update(config, u1,
+                       _site((range(14, 21), 'INIT'), (range(21, 31), 'NEW1'),
+                             (range(31, 41), 'NEW2')))
+    assert _chapter_snapshot(u2) == \
+        [(n, 'INIT') for n in range(4, 21)] + \
+        [(n, 'NEW1') for n in range(21, 31)] + \
+        [(n, 'NEW2') for n in range(31, 41)]
+
+    # site deletes 21..25 and adds 41..43.
+    u3 = staged_update(config, u2,
+                       _site((range(14, 21), 'INIT'), (range(26, 31), 'NEW1'),
+                             (range(31, 41), 'NEW2'), (range(41, 44), 'NEW3')))
+    assert _chapter_snapshot(u3) == \
+        [(n, 'INIT') for n in range(4, 21)] + \
+        [(n, 'NEW1') for n in range(21, 31)] + \
+        [(n, 'NEW2') for n in range(31, 41)] + \
+        [(n, 'NEW3') for n in range(41, 44)]
+
+    # site keeps only chapters 16, 18, 26 and 42.
+    u4 = staged_update(config, u3,
+                       _site(([16], 'INIT'), ([18], 'INIT'),
+                             ([26], 'NEW1'), ([42], 'NEW2')))
+    assert _chapter_snapshot(u4) == \
+        [(n, 'INIT') for n in range(4, 21)] + \
+        [(n, 'NEW1') for n in range(21, 31)] + \
+        [(n, 'NEW2') for n in range(31, 41)] + \
+        [(n, 'NEW3') for n in range(41, 44)]
