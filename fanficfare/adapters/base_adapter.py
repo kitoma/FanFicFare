@@ -229,6 +229,28 @@ class BaseSiteAdapter(Requestable):
         text = re.sub(r'\s+', ' ', text).strip()
         return hashlib.sha256(text.encode('utf-8')).hexdigest()
 
+    def _text_tokens(self, text):
+        cache = self.__dict__.setdefault('_text_tokens_cache', {})
+        hit = cache.get(text)
+        if hit is None:
+            tokens = text.lower().split()
+            hit = (len(tokens), set(tokens))
+            cache[text] = hit
+        return hit
+
+    def text_similarity(self, text_a, text_b):
+        """Compute Jaccard similarity between two text strings.
+        Returns float between 0.0 (completely different) and 1.0 (identical)."""
+        if not text_a or not text_b:
+            return 0.0
+        count_a, words_a = self._text_tokens(text_a)
+        count_b, words_b = self._text_tokens(text_b)
+        if not words_a or not words_b:
+            return 0.0
+        intersection = words_a & words_b
+        union = words_a | words_b
+        return len(intersection) / len(union) if union else 0.0
+
     def _chapter_needs_recheck(self, url, index, total_site_chapters):
         """Determine if a chapter should be re-downloaded for edit detection.
 
@@ -289,80 +311,111 @@ class BaseSiteAdapter(Requestable):
             return self.utf8FromSoup(None,
                                      self.oldchaptersmap[url])
 
-    def _preserve_deleted_chapters(self):
+    def _preserve_deleted_chapters(self, fresh_chapter_content):
         """Carry forward chapters that were in the old epub but are no
-        longer on the site.
+        longer on the site (preservation + reupload detection).
 
         Preserved chapters are inserted at their original position
         relative to the remaining site chapters so chronological order
-        is kept.  After assembly the final chapters are renumbered so
-        the 'number'/'index04'/'index' fields (used by chapter_title
-        patterns) are stable even though preserved chapters were
-        inserted mid-list.
+        is kept.  Chapters recognized as reuploads (a new chapter with
+        similar content) are NOT preserved; the new version is kept and
+        its url recorded in self.reupload_replacement_urls.  After
+        assembly the final chapters are renumbered so the 'number'/
+        'index04'/'index' fields (used by chapter_title patterns) are
+        stable even though preserved chapters were inserted mid-list.
         """
+        self.reupload_replacement_urls = set()
         if not (self.preserve_deleted_chapters() and self.oldchaptersmap):
             return
 
         site_urls = set(ch['url'] for ch in self.chapterUrls)
         old_urls_in_order = list(self.oldchaptersmap.keys())
+        old_pos = {url: i for i, url in enumerate(old_urls_in_order)}
         preserve_list = []
         for old_url in old_urls_in_order:
             if old_url not in site_urls:
                 preserve_list.append(old_url)
 
+        reupload_detection = self.getConfig('update_reupload_detection', 'none')
+        threshold = float(self.getConfig('update_reupload_similarity_threshold') or '0.8')
+
         for old_url in preserve_list:
             old_soup = self.oldchaptersmap[old_url]
+            old_text = stripHTML(old_soup) if old_soup else ''
 
-            # Preserve this chapter as a deleted chapter
-            old_hash = (self.oldchapterhashes or {}).get(old_url, '')
-            # Restore the chapter's real title.  The old soup
-            # no longer carries it (epubutils.get_update_data
-            # strips the leading fff_chapter_title heading), so
-            # prefer the chaptertitle/origtitle recorded in the
-            # epub's <meta> tags, then any h3 left in the old
-            # soup, then the URL slug as a last resort.
-            old_data = self.oldchaptersdata.get(old_url, {}) \
-                if self.oldchaptersdata else {}
-            old_title = old_data.get('chaptertitle') or \
-                old_data.get('chapterorigtitle')
-            if not old_title:
-                old_h3 = old_soup.find('h3') if old_soup else None
-                if old_h3:
-                    old_title = old_h3.get_text(strip=True)
-            if not old_title:
-                old_title = old_url.split('/')[-1].replace('-', ' ').replace('_', ' ')
-            preserved_chap = {
-                'url': old_url,
-                'title': old_title,
-                'html': self.utf8FromSoup(None, old_soup) if old_soup else '',
-                'chapterhash': old_hash,
-            }
-            # Use addChapter() so the chapter dict gets all the
-            # fields getChapters() expects ('new', 'number',
-            # 'index04', 'index', 'origtitle', 'toctitle').
-            # addChapter() appends; then move the chapter into
-            # its chronological slot, before the first surviving
-            # site chapter that originally followed it.
-            self.story.addChapter(dict(preserved_chap), newchap=False)
-            preserved = self.story.chapters.pop()
-            ch_index = len(self.story.chapters)
-            last_survivor_index = -1
-            for i, existing in enumerate(self.story.chapters):
-                if existing['url'] in old_urls_in_order:
-                    last_survivor_index = i
-                    if old_urls_in_order.index(existing['url']) > old_urls_in_order.index(old_url):
-                        ch_index = i
-                        break
-            else:
-                # No surviving site chapter originally followed
-                # this one (everything after it on the site was
-                # deleted).  Insert just after the last surviving
-                # old chapter so it lands BEFORE brand-new
-                # chapters instead of after them.
-                if last_survivor_index >= 0:
-                    ch_index = last_survivor_index + 1
-            self.story.chapters.insert(ch_index, preserved)
-            logger.info("Preserved deleted chapter: %s" % old_url)
+            matched = False
+            if reupload_detection == 'similarity' and old_text:
+                # Check if any new chapter has similar content
+                best_match_url = None
+                best_similarity = 0.0
+                for new_url, new_text in fresh_chapter_content.items():
+                    count_old, _ = self._text_tokens(old_text)
+                    count_new, _ = self._text_tokens(new_text)
+                    if (count_old <= 0 or count_new <= 0
+                            or min(count_old, count_new) / max(count_old, count_new) < threshold):
+                        continue
+                    sim = self.text_similarity(old_text, new_text)
+                    if sim > best_similarity:
+                        best_similarity = sim
+                        best_match_url = new_url
+                if best_match_url and best_similarity >= threshold:
+                    matched = True
+                    self.reupload_replacement_urls.add(best_match_url)
+                    logger.info("Reupload detected: %s similar to %s (%.1f%%), "
+                                "keeping new version only" %
+                                (old_url, best_match_url, best_similarity * 100))
+
+            if not matched:
+                # Preserve this chapter as a deleted chapter
+                old_hash = (self.oldchapterhashes or {}).get(old_url, '')
+                # Restore the chapter's real title.  The old soup
+                # no longer carries it (epubutils.get_update_data
+                # strips the leading fff_chapter_title heading), so
+                # prefer the chaptertitle/origtitle recorded in the
+                # epub's <meta> tags, then any h3 left in the old
+                # soup, then the URL slug as a last resort.
+                old_data = self.oldchaptersdata.get(old_url, {}) \
+                    if self.oldchaptersdata else {}
+                old_title = old_data.get('chaptertitle') or \
+                    old_data.get('chapterorigtitle')
+                if not old_title:
+                    old_h3 = old_soup.find('h3') if old_soup else None
+                    if old_h3:
+                        old_title = old_h3.get_text(strip=True)
+                if not old_title:
+                    old_title = old_url.split('/')[-1].replace('-', ' ').replace('_', ' ')
+                preserved_chap = {
+                    'url': old_url,
+                    'title': old_title,
+                    'html': self.utf8FromSoup(None, old_soup) if old_soup else '',
+                    'chapterhash': old_hash,
+                }
+                # Use addChapter() so the chapter dict gets all the
+                # fields getChapters() expects ('new', 'number',
+                # 'index04', 'index', 'origtitle', 'toctitle').
+                # addChapter() appends; then move the chapter into
+                # its chronological slot, before the first surviving
+                # site chapter that originally followed it.
+                self.story.addChapter(dict(preserved_chap), newchap=False)
+                preserved = self.story.chapters.pop()
+                ch_index = len(self.story.chapters)
+                last_survivor_index = -1
+                for i, existing in enumerate(self.story.chapters):
+                    if existing['url'] in old_pos:
+                        last_survivor_index = i
+                        if old_pos[existing['url']] > old_pos[old_url]:
+                            ch_index = i
+                            break
+                else:
+                    # No surviving site chapter originally followed
+                    # this one (everything after it on the site was
+                    # deleted).  Insert just after the last surviving
+                    # old chapter so it lands BEFORE brand-new
+                    # chapters instead of after them.
+                    if last_survivor_index >= 0:
+                        ch_index = last_survivor_index + 1
+                self.story.chapters.insert(ch_index, preserved)
+                logger.info("Preserved deleted chapter: %s" % old_url)
 
         # Renumber chapters to match the final chronological order.
         # No-op when all chapters were appended in order.
@@ -374,15 +427,17 @@ class BaseSiteAdapter(Requestable):
 
     def _report_update_counters(self):
         """Log the final book's chapter composition: chapters carried
-        from the old epub and chapters genuinely added.  Counted after
-        assembly so the totals reflect the epub that will actually be
-        written."""
+        from the old epub, chapters replaced (old chapter reuploaded
+        under a new url, new version kept), and chapters genuinely
+        added. Counted after assembly so the totals reflect the epub
+        that will actually be written."""
         old_urls = set((self.oldchaptersmap or {}).keys())
         final_urls = {ch['url'] for ch in self.story.chapters}
         new_urls = final_urls - old_urls
-        self.story.chapter_added_count = len(new_urls)
+        self.story.chapter_replaced_count = len(new_urls & self.reupload_replacement_urls)
+        self.story.chapter_added_count = len(new_urls) - self.story.chapter_replaced_count
         self.story.chapter_written_count = len(self.story.chapters)
-        logger.info("UPDATE_COUNTERS updated="+str(self.story.chapter_updated_count)+" added="+str(self.story.chapter_added_count)+" written="+str(self.story.chapter_written_count)+" old_urls="+str(len(old_urls))+" new_urls="+str(len(new_urls)))
+        logger.info("UPDATE_COUNTERS updated="+str(self.story.chapter_updated_count)+" replaced="+str(self.story.chapter_replaced_count)+" added="+str(self.story.chapter_added_count)+" written="+str(self.story.chapter_written_count)+" old_urls="+str(len(old_urls))+" new_urls="+str(len(new_urls)))
 
     def img_url_trans(self,imgurl):
         "Hook for transforming img urls in adapter"
@@ -396,6 +451,9 @@ class BaseSiteAdapter(Requestable):
             ## one-off step to normalize old chapter URLs if present.
             if self.oldchaptersmap:
                 self.oldchaptersmap = dict((self.normalize_chapterurl(key), value) for (key, value) in self.oldchaptersmap.items())
+
+            # Track content of newly fetched chapters for reupload detection
+            fresh_chapter_content = {}
 
             percent = 0.0
             per_step = 1.0/self.story.getChapterCount()
@@ -505,11 +563,18 @@ try to download.</p>
                     ## No?  Want to be able to configure by [writer]
                     ## It's a soup or soup part?
                 self.story.addChapter(passchap, newchap)
+                # Track content of newly fetched chapters for reupload detection
+                if newchap and passchap.get('html') and isinstance(passchap['html'], str):
+                    try:
+                        from bs4 import BeautifulSoup as _BS
+                        fresh_chapter_content[url] = stripHTML(_BS(passchap['html'], 'html.parser'))
+                    except Exception:
+                        pass
 
             # Carry forward chapters that are no longer on the site
-            # (preservation) and renumber, then report the chapter
-            # composition of the final book.
-            self._preserve_deleted_chapters()
+            # (preservation + reupload detection) and renumber, then
+            # report the chapter composition of the final book.
+            self._preserve_deleted_chapters(fresh_chapter_content)
             self._report_update_counters()
 
             self.storyDone = True
