@@ -96,6 +96,7 @@ class BaseSiteAdapter(Requestable):
         self.calibrebookmark = None
         self.logfile = None
         self.ignore_chapter_url_list = None
+        self.ignore_chapter_url_list_config_only = None
         self.parsed_QS = None
 
         self.section_url_names(self.getSiteDomain(),self.get_section_url)
@@ -177,8 +178,11 @@ class BaseSiteAdapter(Requestable):
         ## don't save them that way to match previous behavior.
         if self.ignore_chapter_url_list == None:
             self.ignore_chapter_url_list = {}
+            self.ignore_chapter_url_list_config_only = set()
             for u in self.getConfig('ignore_chapter_url_list').splitlines():
-                self.ignore_chapter_url_list[self.normalize_chapterurl(u)] = True
+                normal_chap_url = self.normalize_chapterurl(u)
+                self.ignore_chapter_url_list[normal_chap_url] = True
+                self.ignore_chapter_url_list_config_only.add(normal_chap_url)
 
         normal_chap_url = self.normalize_chapterurl(url)
         if normal_chap_url not in self.ignore_chapter_url_list:
@@ -274,6 +278,11 @@ class BaseSiteAdapter(Requestable):
         in the updated epub."""
         return bool(self.getConfig('update_preserve_deleted_chapters'))
 
+    def preserve_deleted_chapters_but_drop_ignored(self):
+        """True when chapters excluded by ignore_chapter_url_list
+        should be dropped instead of preserved."""
+        return bool(self.getConfig('update_preserve_deleted_chapters_but_drop_ignored'))
+
     def recheck_recent_chapters(self):
         """True when edit detection wants previously-downloaded chapters
         re-downloaded during an update (recent-window)."""
@@ -318,9 +327,14 @@ class BaseSiteAdapter(Requestable):
 
         site_urls = set(ch['url'] for ch in self.chapterUrls)
         old_urls_in_order = list(self.oldchaptersmap.keys())
+        drop_ignored = self.ignore_chapter_url_list_config_only \
+            if self.preserve_deleted_chapters_but_drop_ignored() else None
         preserve_list = []
         for old_url in old_urls_in_order:
             if old_url not in site_urls:
+                if drop_ignored is not None and \
+                        self.normalize_chapterurl(old_url) in drop_ignored:
+                    continue
                 preserve_list.append(old_url)
 
         for old_url in preserve_list:

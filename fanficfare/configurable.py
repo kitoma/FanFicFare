@@ -271,6 +271,7 @@ def get_valid_set_options():
                'force_update_epub_always':(None,['epub'],boollist),
                'update_check_recent_chapters':(None,None,None),
                'update_preserve_deleted_chapters':(None,['epub'],boollist),
+               'update_preserve_deleted_chapters_but_drop_ignored':(None,['epub'],boollist),
                'page_progression_direction_rtl':(None,['epub'],boollist),
 
                'windows_eol':(None,['txt'],boollist),

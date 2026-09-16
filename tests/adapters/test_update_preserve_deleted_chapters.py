@@ -412,3 +412,69 @@ def test_staged_update_flow_mixed_deletions_3(tmp_path):
         [(n, 'NEW1') for n in range(21, 31)] + \
         [(n, 'NEW2') for n in range(31, 41)] + \
         [(n, 'NEW3') for n in range(41, 44)]
+
+
+def test_preserve_drop_ignored_drops_ignored_chapter(tmp_path):
+    # ch2 is still on the site but is now excluded by
+    # ignore_chapter_url_list.  With drop_ignored set, it must not be
+    # preserved as a "deleted" chapter; the genuinely deleted ch1, ch3
+    # and ch5 still are.
+    adapter = make_adapter(OLD_URLS, SITE_CHAPTERS, tmp_path,
+                           ignore=CH % 2, drop_ignored=True)
+    adapter.getStory()
+
+    urls = [ch['url'] for ch in adapter.story.chapters]
+    assert urls == [CH % 1, CH % 3, CH % 4, CH % 5, CH % 6]
+    assert CH % 2 not in urls
+
+
+def test_preserve_default_keeps_ignored_chapter(tmp_path):
+    # Without the new option, ignore_chapter_url_list must not change
+    # preserve-deleted behavior: the ignored ch2 is still preserved.
+    adapter = make_adapter(OLD_URLS, SITE_CHAPTERS, tmp_path,
+                           ignore=CH % 2)
+    adapter.getStory()
+
+    urls = [ch['url'] for ch in adapter.story.chapters]
+    assert urls == OLD_URLS + [CH % 6]
+
+
+def test_preserve_drop_ignored_uses_config_only_list(tmp_path):
+    # With dedup_chapter_list:true the runtime ignore dict also collects
+    # every downloaded site URL.  drop_ignored must use the config-only
+    # copy, so only the configured ch2 is dropped -- and the dedup
+    # bookkeeping is unaffected.
+    adapter = make_adapter(OLD_URLS, SITE_CHAPTERS, tmp_path,
+                           ignore=CH % 2, drop_ignored=True, dedup=True)
+    adapter.getStory()
+
+    urls = [ch['url'] for ch in adapter.story.chapters]
+    assert urls == [CH % 1, CH % 3, CH % 4, CH % 5, CH % 6]
+    # config-only set holds just the configured entry ...
+    assert adapter.ignore_chapter_url_list_config_only == {CH % 2}
+    # ... while the runtime dict also holds the dedup'd site chapters.
+    assert CH % 4 in adapter.ignore_chapter_url_list
+    assert CH % 6 in adapter.ignore_chapter_url_list
+    assert CH % 4 not in adapter.ignore_chapter_url_list_config_only
+
+
+def test_staged_update_drop_ignored(tmp_path):
+    """End-to-end: the ignore entry is added between the initial
+    download and the update.
+
+    - initial download: ch1..5.
+    - the user then ignores ch1 and enables drop_ignored; the site
+      keeps ch1..3 and adds ch6, while ch4/ch5 are deleted.
+    - update: ch1 is dropped (ignored, though still on the site),
+      ch4/ch5 are preserved and ch6 appended.
+    """
+    config_init = staged_config(tmp_path)
+    s0 = _site((range(1, 6), 'INIT'))
+    initial = staged_download(config_init, s0)
+    assert _chapter_snapshot(initial) == [(n, 'INIT') for n in range(1, 6)]
+
+    config_up = staged_config(tmp_path, ignore=CH % 1, drop_ignored=True)
+    s1 = _site(([1, 2, 3], 'INIT'), ([6], 'NEW1'))
+    updated = staged_update(config_up, initial, s1)
+    assert _chapter_snapshot(updated) == \
+        [(2, 'INIT'), (3, 'INIT'), (4, 'INIT'), (5, 'INIT'), (6, 'NEW1')]

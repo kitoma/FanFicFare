@@ -66,7 +66,7 @@ class StagedSiteAdapter(FakeSiteAdapter):
 
 
 def make_adapter(old_urls, site_chapters, tmp_path, include_images='false',
-                 oldimgs=None):
+                 oldimgs=None, ignore='', drop_ignored=False, dedup=False):
     configuration = Configuration(['example.com'], "EPUB", lightweight=True)
     configuration.read(os.path.join(
         os.path.dirname(__file__), '..', '..', 'fanficfare', 'defaults.ini'))
@@ -75,7 +75,12 @@ def make_adapter(old_urls, site_chapters, tmp_path, include_images='false',
         '[defaults]\n'
         'update_preserve_deleted_chapters:true\n'
         'update_check_recent_chapters:0\n'
-        'include_images:%s\n' % (include_images))
+        'update_preserve_deleted_chapters_but_drop_ignored:%s\n'
+        'dedup_chapter_list:%s\n'
+        'include_images:%s\n'
+        'ignore_chapter_url_list:%s\n'
+        % (str(drop_ignored).lower(), str(dedup).lower(),
+           include_images, ignore))
     configuration.read(str(personal))
 
     adapter = FakeSiteAdapter(
@@ -107,7 +112,7 @@ STORY_URL = 'http://example.com/story/12345-test-story'
 CH = 'http://example.com/story/ch/%d'
 
 
-def staged_config(tmp_path, recent='0'):
+def staged_config(tmp_path, recent='0', ignore='', drop_ignored=False):
     configuration = Configuration(['example.com'], 'EPUB', lightweight=True)
     configuration.read(os.path.join(
         os.path.dirname(__file__), '..', '..', 'fanficfare', 'defaults.ini'))
@@ -116,7 +121,10 @@ def staged_config(tmp_path, recent='0'):
         '[defaults]\n'
         'update_preserve_deleted_chapters:true\n'
         'update_check_recent_chapters:%s\n'
-        'include_images:false\n' % (recent))
+        'update_preserve_deleted_chapters_but_drop_ignored:%s\n'
+        'include_images:false\n'
+        'ignore_chapter_url_list:%s\n'
+        % (recent, str(drop_ignored).lower(), ignore))
     configuration.read(str(personal))
     return configuration
 
