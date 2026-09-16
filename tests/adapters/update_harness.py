@@ -66,7 +66,7 @@ class StagedSiteAdapter(FakeSiteAdapter):
 
 
 def make_adapter(old_urls, site_chapters, tmp_path, include_images='false',
-                 oldimgs=None):
+                 oldimgs=None, reupload_detection='none'):
     configuration = Configuration(['example.com'], "EPUB", lightweight=True)
     configuration.read(os.path.join(
         os.path.dirname(__file__), '..', '..', 'fanficfare', 'defaults.ini'))
@@ -75,7 +75,9 @@ def make_adapter(old_urls, site_chapters, tmp_path, include_images='false',
         '[defaults]\n'
         'update_preserve_deleted_chapters:true\n'
         'update_check_recent_chapters:0\n'
-        'include_images:%s\n' % (include_images))
+        'update_reupload_detection:%s\n'
+        'update_reupload_similarity_threshold:0.8\n'
+        'include_images:%s\n' % (reupload_detection, include_images))
     configuration.read(str(personal))
 
     adapter = FakeSiteAdapter(
@@ -116,6 +118,8 @@ def staged_config(tmp_path, recent='0'):
         '[defaults]\n'
         'update_preserve_deleted_chapters:true\n'
         'update_check_recent_chapters:%s\n'
+        'update_reupload_detection:none\n'
+        'update_reupload_similarity_threshold:0.8\n'
         'include_images:false\n' % (recent))
     configuration.read(str(personal))
     return configuration

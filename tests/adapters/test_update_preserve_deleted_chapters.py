@@ -1,5 +1,5 @@
-"""Offline tests for preserved-deleted-chapter handling of the
-incremental-update feature.
+"""Offline tests for preserved-deleted-chapter handling (incl. reupload
+detection) of the incremental-update feature.
 
 Everything is served by the shared staged adapters in update_harness so
 no network fetching takes place.
@@ -41,6 +41,43 @@ def test_update_counters_preserve_no_reupload(tmp_path):
     # No reupload-detection: the one new chapter is a pure addition.
     assert adapter.story.chapter_written_count == 6
     assert adapter.story.chapter_added_count == 1
+    assert adapter.story.chapter_replaced_count == 0
+
+
+def test_update_counters_reupload_similarity(tmp_path, monkeypatch):
+    # ch/1 is gone from the site, but its content is reuploaded under the
+    # new ch/6 url. With similarity detection enabled and identical text
+    # (Jaccard 1.0 >= 0.8) ch/6 must count as a replacement, not an
+    # addition; ch/7 is a genuine new chapter.
+    def similar_text(self, url, index):
+        if url == 'http://example.com/story/ch/6':
+            # Same markup as the old ch/1 soup, so the stripped text is
+            # identical to the old chapter's and similarity is 1.0.
+            return '<h3>http://example.com/story/ch/1</h3>' \
+                   '<p>old body http://example.com/story/ch/1</p>'
+        return '<p>new chapter content for %s</p>' % url
+
+    monkeypatch.setattr(FakeSiteAdapter, 'getChapterTextNum', similar_text)
+
+    old_urls = ['http://example.com/story/ch/1',
+                'http://example.com/story/ch/2',
+                'http://example.com/story/ch/3']
+    site = [('B title', 'http://example.com/story/ch/2'),
+            ('C title', 'http://example.com/story/ch/3'),
+            ('F title', 'http://example.com/story/ch/6'),
+            ('G title', 'http://example.com/story/ch/7')]
+    adapter = make_adapter(old_urls, site, tmp_path,
+                           reupload_detection='similarity')
+    adapter.getStory()
+
+    urls = [ch['url'] for ch in adapter.story.chapters]
+    assert urls == ['http://example.com/story/ch/2',
+                    'http://example.com/story/ch/3',
+                    'http://example.com/story/ch/6',
+                    'http://example.com/story/ch/7']
+    assert adapter.story.chapter_written_count == 4
+    assert adapter.story.chapter_added_count == 1
+    assert adapter.story.chapter_replaced_count == 1
 
 
 def test_getChapters_with_preserved_deleted_chapters(tmp_path):

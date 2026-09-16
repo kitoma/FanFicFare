@@ -309,6 +309,7 @@ def do_download_for_worker(book,options,merge,notification=lambda x,y:x):
                 logger.info("Do update - epub(%d) vs url(%d)" % (chaptercount, urlchaptercount))
 
                 inject_cal_cols(book,story,configuration)
+
                 # Fetch the story now (previously only inside writeStory) so we
                 # can tell whether anything actually changed before committing a
                 # write & library update.  writeStory guards against a second
@@ -316,6 +317,7 @@ def do_download_for_worker(book,options,merge,notification=lambda x,y:x):
                 adapter.getStory(notification)
                 if book['collision'] == UPDATE and \
                         adapter.story.chapter_updated_count == 0 and \
+                        adapter.story.chapter_replaced_count == 0 and \
                         adapter.story.chapter_added_count == 0 and \
                         adapter.story.chapter_error_count == 0 and \
                         adapter.story.chapter_written_count == chaptercount:
@@ -343,13 +345,23 @@ def do_download_for_worker(book,options,merge,notification=lambda x,y:x):
 
                 updated_count = adapter.story.chapter_updated_count
                 added_count = adapter.story.chapter_added_count
+                replaced_count = adapter.story.chapter_replaced_count
                 total_count = adapter.story.chapter_written_count
                 failed_count = adapter.story.chapter_error_count
 
                 if failed_count > 0:
-                    if updated_count > 0:
+                    if updated_count > 0 and replaced_count > 0:
+                        book['comment'] = _('Update %(fileform)s completed, updated %(updated)s, replaced %(replaced)s and added %(added)s chapters, %(failed)s failed chapters, for %(total)s total.') % \
+                            {'fileform': options['fileform'], 'updated': updated_count,
+                             'replaced': replaced_count, 'added': added_count,
+                             'failed': failed_count, 'total': total_count}
+                    elif updated_count > 0:
                         book['comment'] = _('Update %(fileform)s completed, updated %(updated)s and added %(added)s chapters, %(failed)s failed chapters, for %(total)s total.') % \
                             {'fileform': options['fileform'], 'updated': updated_count,
+                             'added': added_count, 'failed': failed_count, 'total': total_count}
+                    elif replaced_count > 0:
+                        book['comment'] = _('Update %(fileform)s completed, replaced %(replaced)s and added %(added)s chapters, %(failed)s failed chapters, for %(total)s total.') % \
+                            {'fileform': options['fileform'], 'replaced': replaced_count,
                              'added': added_count, 'failed': failed_count, 'total': total_count}
                     else:
                         book['comment'] = _('Update %(fileform)s completed, added %(added)s chapters, %(failed)s failed chapters, for %(total)s total.') % \
@@ -357,9 +369,17 @@ def do_download_for_worker(book,options,merge,notification=lambda x,y:x):
                              'failed': failed_count, 'total': total_count}
                     book['chapter_error_count'] = failed_count
                 else:
-                    if updated_count > 0:
+                    if updated_count > 0 and replaced_count > 0:
+                        book['comment'] = _('Update %(fileform)s completed, updated %(updated)s, replaced %(replaced)s and added %(added)s chapters for %(total)s total.') % \
+                            {'fileform': options['fileform'], 'updated': updated_count,
+                             'replaced': replaced_count, 'added': added_count, 'total': total_count}
+                    elif updated_count > 0:
                         book['comment'] = _('Update %(fileform)s completed, updated %(updated)s and added %(added)s chapters for %(total)s total.') % \
                             {'fileform': options['fileform'], 'updated': updated_count,
+                             'added': added_count, 'total': total_count}
+                    elif replaced_count > 0:
+                        book['comment'] = _('Update %(fileform)s completed, replaced %(replaced)s and added %(added)s chapters for %(total)s total.') % \
+                            {'fileform': options['fileform'], 'replaced': replaced_count,
                              'added': added_count, 'total': total_count}
                     else:
                         book['comment'] = _('Update %(fileform)s completed, added %(added)s chapters for %(total)s total.') % \
