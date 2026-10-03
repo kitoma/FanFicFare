@@ -21,6 +21,25 @@ DEFAULTS = os.path.join(os.path.dirname(fanficfare.__file__),
 
 STORY_URL = 'https://www.example.com/fiction/12345'
 
+# Simulates the former hash-era FFF writer output (old plugin branch):
+# a chapter_start with the two chapterhash/chapterlastcheck metas the
+# v4.62 hash-free writer no longer emits.
+HASH_META_START = '''<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>${chapter}</title>
+<link href="stylesheet.css" type="text/css" rel="stylesheet"/>
+<meta name="chapterurl" content="${url}" />
+<meta name="chapterorigtitle" content="${origchapter}" />
+<meta name="chaptertoctitle" content="${tocchapter}" />
+<meta name="chaptertitle" content="${chapter}" />
+<meta name="chapterhash" content="${chapterhash}" />
+<meta name="chapterlastcheck" content="${chapterlastcheck}" />
+</head>
+<body class="fff_chapter">
+<h3 class="fff_chapter_title">${chapter}</h3>
+'''
+
 
 def _base_configuration(legacy):
     conf = Configuration(['www.example.com'], 'epub')
@@ -34,9 +53,8 @@ def _base_configuration(legacy):
              'category,status,datePublished,dateUpdated,dateCreated,'
              'publisher,description,numChapters,numWords')
     conf.set('overrides', 'include_images', 'true')
-    if legacy:
-        conf.set('overrides', 'chapter_start',
-                 DEFAULTS_HASH_META_FREE_START)
+    conf.set('overrides', 'chapter_start',
+             DEFAULTS_HASH_META_FREE_START if legacy else HASH_META_START)
     return conf
 
 
@@ -169,5 +187,30 @@ def test_legacy_chapters_byte_identical(tmp_path):
             assert zo.read(name) == zn.read(name)
     zo.close()
     zn.close()
+    ok = verify(epub, out, parts_dir=parts)
+    assert ok
+
+
+def test_modern_chapters_lose_only_hash_metas(tmp_path):
+    epub, parts, out = _run_roundtrip(tmp_path, chapter_count=4,
+                                      legacy=False)
+    import re as _re
+    import zipfile
+    zo = zipfile.ZipFile(epub)
+    zn = zipfile.ZipFile(out)
+    hashline = _re.compile(
+        rb'<meta name="chapterhash" content="[^"]*" />\r?\n'
+        rb'<meta name="chapterlastcheck" content="[^"]*" />\r?\n')
+    n = 0
+    for name in zo.namelist():
+        base = os.path.basename(name)
+        if not (base.startswith('file') and base.endswith('.xhtml')):
+            continue
+        od = hashline.sub(b'', zo.read(name))
+        assert od == zn.read(name), name
+        n += 1
+    zo.close()
+    zn.close()
+    assert n == 4
     ok = verify(epub, out, parts_dir=parts)
     assert ok

@@ -105,8 +105,12 @@ def _get_configuration(sections, recon):
             base = base[:-len(addto)]
         ovr['output_css'] = base
 
-    if not recon.get('has_chapter_hashes'):
-        ovr['chapter_start'] = DEFAULTS_HASH_META_FREE_START
+    # Chapter wrapper template.  On hash-free FFF (>= v4.62) the
+    # built-in default is exactly this (no chapterhash/chapterlastcheck
+    # metas), so the pin is a no-op today -- it keeps reconstruction
+    # deterministic even if FFF's default template later changes, and
+    # documents that the v4.62 writer cannot emit hash metas.
+    ovr['chapter_start'] = DEFAULTS_HASH_META_FREE_START
 
     for key, value in ovr.items():
         cfgset(conf, key, value)
@@ -260,10 +264,6 @@ def _load_chapters(story, recon, img_remap=None):
             'toctitle': rec.get('toctitle', rec.get('title', '')),
             'html': body,
         }
-        if rec.get('hash'):
-            chap['chapterhash'] = rec['hash']
-        if rec.get('lastcheck'):
-            chap['chapterlastcheck'] = rec['lastcheck']
         story.addChapter(chap)
 
 

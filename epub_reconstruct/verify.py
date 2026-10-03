@@ -42,7 +42,7 @@ def verify(orig_epub, new_epub, parts_dir=None):
     equal_entries = []
     diff_entries = []   # (name, reason)
     chapter_bodies_equal = {}
-    hash_compare = {}   # name -> ('equal','orig-missing','new-missing','diff')
+    hash_compare = {}   # name -> 'equal'|'orig-missing'|'new-missing'|'diff'
     semantic = {}       # name -> ('ok',) or ('diff', [messages])
 
     for name in o_names:
@@ -74,14 +74,20 @@ def verify(orig_epub, new_epub, parts_dir=None):
                 n_body = re.sub(r'\s+', '', str(np_.get('body', '')))
                 if o_body == n_body and op['title'] == np_['title']:
                     chapter_bodies_equal[name] = True
-                    if op.get('hash') and not np_.get('hash'):
-                        hash_compare[name] = 'new-missing'
-                    elif op.get('hash') and op['hash'] == np_['hash']:
+                    # Hash metas are presence-parity ONLY: hash-free FFF
+                    # (>= v4.62) never writes them, so a chapter that
+                    # originally carried chapterhash/chapterlastcheck is
+                    # expected to lose both lines on reconstruction.
+                    # This never affects the verdict.
+                    if op.get('hash') == np_.get('hash') and \
+                            op.get('lastcheck') == np_.get('lastcheck'):
                         hash_compare[name] = 'equal'
-                    elif op.get('hash'):
-                        hash_compare[name] = 'diff'
-                    elif not op.get('hash'):
+                    elif not (op.get('hash') or op.get('lastcheck')):
                         hash_compare[name] = 'orig-missing'
+                    elif not (np_.get('hash') or np_.get('lastcheck')):
+                        hash_compare[name] = 'new-missing'
+                    else:
+                        hash_compare[name] = 'diff'
                     continue
                 diff_entries.append((name, 'chapter body/title difference'))
                 continue
@@ -132,13 +138,20 @@ def verify(orig_epub, new_epub, parts_dir=None):
     if chapter_bodies_equal:
         lines.append('=== chapters ===')
         lines.append('chapter bodies equal: %d' % len(chapter_bodies_equal))
+        lines.append('hash/lastcheck metas: presence-parity only '
+                     '(not part of the verdict)')
         for name, status in hash_compare.items():
             if status == 'equal':
                 continue
             if status == 'orig-missing':
-                lines.append('  %s: hash skipped (orig has none)' % name)
+                lines.append('  %s: hash metas absent in orig (skip)'
+                             % name)
                 continue
-            lines.append('  %s: hash %s' % (name, status))
+            if status == 'new-missing':
+                lines.append('  %s: hash metas dropped by hash-free '
+                             'v4.62 writer (expected)' % name)
+                continue
+            lines.append('  %s: hash/lastcheck %s' % (name, status))
     if meta_report:
         lines.append('=== metadata ===')
         for r in meta_report:

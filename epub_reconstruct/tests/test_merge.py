@@ -397,9 +397,10 @@ def test_full_loop_epub_inputs(tmp_path):
     z.close()
 
 
-def test_hash_preserve_and_fill(tmp_path):
-    from epub_reconstruct.merge import compute_chapter_hash
-
+def test_merge_hash_free(tmp_path):
+    # The v4.62 writer cannot emit chapterhash/chapterlastcheck metas,
+    # so merged epubs are always hash-free regardless of source
+    # vintages -- the old preserve/compute-hash machinery is gone.
     h2 = 'a' * 64
     lc2 = '2024-02-01 12:00:00'
     p1 = _make_source_parts(str(tmp_path), 'legacy', [1, 2, 3],
@@ -411,48 +412,15 @@ def test_hash_preserve_and_fill(tmp_path):
     out_dir, report = _run_merge(tmp_path, [p1, p2])
     recon = json.load(open(os.path.join(out_dir, 'reconstruction.json'),
                            encoding='utf-8'))
-    assert recon['has_chapter_hashes'] is True
-    assert report['hash_counts'] == {'preserved': 3, 'computed': 2}
-    assert report['hashes_policy'] == 'keep hashes'
-    by_id = {c['url'].rstrip('/').split('/')[-2]: c for c in
-             recon['chapters']}
-    # overlap chapter 3 chosen from modern (newest): stored hash preserved
-    assert by_id['3']['hash'] == h2
-    assert by_id['3']['lastcheck'] == lc2
-    assert report['selections']['3']['hash'] == 'preserved'
-    # legacy-only chapter 1: hash computed from its body
-    body1 = open(os.path.join(out_dir, 'chapters', '0001.html'),
-                 encoding='utf-8').read()
-    assert by_id['1']['hash'] == compute_chapter_hash('<p>body for 1</p>')
-    # computed-hash lastcheck derives from the source epub's mtime,
-    # NOT the merge runtime (the chapter was last checked when the
-    # source epub was downloaded).
-    import datetime as _dt
-    assert by_id['1']['lastcheck'] == _dt.datetime.fromtimestamp(
-        1600000000.0).strftime('%Y-%m-%d %H:%M:%S')
-    assert report['selections']['1']['hash'] == 'computed'
-
-
-def test_hash_computed_without_epub_mtime(tmp_path):
-    p1 = _make_source_parts(str(tmp_path), 'legacy0', [1, 2],
-                            date_updated='2024-01-01T00:00:00')
-    recon_path = os.path.join(p1, 'reconstruction.json')
-    with open(recon_path, encoding='utf-8') as fh:
-        recon = json.load(fh)
-    recon['epub_mtime'] = 0
-    with open(recon_path, 'w', encoding='utf-8') as fh:
-        json.dump(recon, fh)
-    p2 = _make_source_parts(str(tmp_path), 'modern0', [2, 3],
-                            date_updated='2024-02-01T00:00:00',
-                            hashes={2: ('d' * 64, '2024-02-01 12:00:00'),
-                                    3: ('e' * 64, '2024-02-01 12:00:00')})
-    out_dir, report = _run_merge(tmp_path, [p1, p2])
-    recon = json.load(open(os.path.join(out_dir, 'reconstruction.json'),
-                           encoding='utf-8'))
-    # hash still written even though lastcheck is unknown (no mtime)
-    assert recon['has_chapter_hashes'] is True
-    assert report['hashes_policy'] == 'keep hashes'
-    by_id = {c['url'].rstrip('/').split('/')[-2]: c for c in
-             recon['chapters']}
-    assert by_id['1']['hash']
-    assert by_id['1']['lastcheck'] == ''
+    assert recon['metadata']['numWords'] > 0
+    assert 'has_chapter_hashes' not in recon
+    assert 'hash_counts' not in report
+    assert 'hashes_policy' not in report
+    for c in recon['chapters']:
+        assert 'hash' not in c
+        assert 'lastcheck' not in c
+    for sel in report['selections'].values():
+        assert 'hash' not in sel
+    assert report['union_chapters'] == 5
+    assert report['merged_chapters'] == 5
+    assert report['match_union'] is True
